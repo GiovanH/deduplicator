@@ -1,3 +1,15 @@
+# Working directories
+comparison/
+databases/
+deleted/
+do*.sh
+do*.bat
+oldcmd/
+undo*.sh
+
+
+
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]
