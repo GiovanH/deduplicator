@@ -69,9 +69,8 @@ def sortDuplicatePaths(filenames):
     return st
 
 
-def scanDirs(shelvefile, fileglobs, recheck=False, hash_size=16):
+def scanDirs(shelvefile, imagePaths, recheck=False, hash_size=16):
     # Resolve glob to image paths
-    imagePaths = sum([glob.glob(a, recursive=True) for a in fileglobs], [])
 
     # Make a list of image paths we already know about. We use this to skip images
     # that probably haven't changed.
@@ -162,8 +161,13 @@ def getDuplicatesToDelete(shelvefile, interactive=False):
         else:  # Not interactive.
             # We keep the FIRST file in the sort.
             # We'll delete the rest.
-            goingtodelete = sortedFiles[1:]
             goingtokeep = sortedFiles[0]
+            goingtodelete = sortedFiles[1:]
+            if (goingtokeep is None or len(goingtokeep) == 0):
+                # Just in case.
+                for sym in [sortedFiles, goingtokeep, goingtodelete]:
+                    print(sym)
+                raise AssertionError("Internal logic consistancy error. Program instructed to consider ALL images with a given hash as extraneous. Please debug.")
         # However the method, add all our doomed files to the list.
         filestodelete += goingtodelete
 
@@ -198,8 +202,9 @@ def generateDuplicateFilelists(shelvefile, bundleHash=False, threshhold=1, quiet
                 filenames.remove(badfile)
                 freshening[h] = filenames
                 tempdb[h] = filenames
-                print("File {} has vanished. Now aware of {} unique hashes with missing records. ".format(
-                    badfile, len(freshening.keys())))
+                if not quiet:
+                    print("File {} has vanished. Now aware of {} unique hashes with missing records. ".format(
+                        badfile, len(freshening.keys())))
 
         # If there is STILL more than one file with the hash:
         if len(filenames) >= threshhold:
@@ -256,6 +261,7 @@ def magickCompareDuplicates(shelvefile):
     print("Generating compare list")
     # If there are no duplicates, just skip.
     if next(generateDuplicateFilelists(shelvefile, bundleHash=True, threshhold=2)) is None:
+        print("No duplicates to compare!")
         return
 
     # Otherwise, do the thing.
@@ -365,20 +371,29 @@ def parse_args():
 if __name__ == "__main__":
     args = parse_args()
     shelvefile = "{0}.s{1}".format(args.shelve, args.hashsize)
+    print("Running")
 
     if not args.noscan:
+        print("Listing files... (Use --noscan to skip this step)")
+        imagePaths = sum([glob.glob(a, recursive=True) for a in args.files], [])
         try:
-            scanDirs(shelvefile, args.files,
+            scanDirs(shelvefile, imagePaths,
                      recheck=args.recheck,
                      hash_size=args.hashsize)
         except Exception as e:
-            print("Database corrupted. Rebuilding.")
+            print("Database corrupted. Restoring.")
             for databaseFile in ["databases/{}.{}".format(shelvefile, ext) for ext in ["dir", "bak", "dat"]]:
                 try:
                     shutil.os.remove(databaseFile)
                 except FileNotFoundError as e:
                     pass
-            scanDirs(shelvefile, args.files,
+            for ext in ["dir", "bak", "dat"]:
+                try:
+                    shutil.copy2("databases/BAK.{}.{}".format(shelvefile, ext),
+                                 "databases/{}.{}".format(shelvefile, ext))
+                except FileNotFoundError as e:
+                    pass
+            scanDirs(shelvefile, imagePaths,
                      recheck=args.recheck,
                      hash_size=args.hashsize)
         print("Backing up database.")
