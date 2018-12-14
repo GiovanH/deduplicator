@@ -20,7 +20,9 @@ HASHDEBUG = False
 # Should we output debugging text about sorting criteria?
 SORTDEBUG = False
 
-GLOBAL_QUIET_DEFAULT = True
+GLOBAL_QUIET_DEFAULT = False
+
+DEBUG_FILE_EXISTS = True
 
 
 def CRC32(filename):
@@ -89,36 +91,37 @@ def scanDirs(shelvefile, imagePaths, recheck=False, hash_size=16):
         for i in progressbar.progressbar(range(len(imagePaths))):
             imagePath = imagePaths[i]
             # If we don't know the image, or if we're doing a full recheck
-            if recheck or imagePath not in knownPaths:
-                # load the image and compute the difference hash
-                try:
-                    image = Image.open(imagePath)
-                    h = str(imagehash.dhash(image, hash_size=hash_size))
+            if imagePath in knownPaths and not recheck:
+                continue
+            # load the image and compute the difference hash
+            try:
+                image = Image.open(imagePath)
+                h = str(imagehash.dhash(image, hash_size=hash_size))
 
-                    # extract the filename from the path and update the database
-                    # using the hash as the key and the filename append to the
-                    # list of values
-                    filename = imagePath  # [imagePath.rfind("/") + 1:]
-                    if HASHDEBUG:
-                        print("File", imagePath, "has hash", h)
+                # extract the filename from the path and update the database
+                # using the hash as the key and the filename append to the
+                # list of values
+                filename = imagePath  # [imagePath.rfind("/") + 1:]
+                if HASHDEBUG:
+                    print("File", imagePath, "has hash", h)
 
-                    # Add the path to the database if it's not already present.
-                    # Each Key (a hash) has a List value.
-                    # The list is a list of file paths with that hash.
-                    if filename not in db.get(h, []):
-                        db[h] = db.get(h, []) + [filename]
-                except FileNotFoundError:
-                    # print("WARNING! File not found: ", imagePath)
-                    # traceback.print_exc()
-                    pass
-                except ValueError:
-                    print("WARNING! Error parsing image: ", imagePath)
-                    traceback.print_exc()
-                except OSError:
-                    # print("File", imagePath, "is not an image file.")
-                    # Let's not clutter stderr with warnings about user globs
-                    # including non-image files.
-                    pass
+                # Add the path to the database if it's not already present.
+                # Each Key (a hash) has a List value.
+                # The list is a list of file paths with that hash.
+                if filename not in db.get(h, []):
+                    db[h] = db.get(h, []) + [filename]
+            except FileNotFoundError:
+                # print("WARNING! File not found: ", imagePath)
+                # traceback.print_exc()
+                pass
+            except ValueError:
+                print("WARNING! Error parsing image: ", imagePath)
+                traceback.print_exc()
+            except OSError:
+                # print("File", imagePath, "is not an image file.")
+                # Let's not clutter stderr with warnings about user globs
+                # including non-image files.
+                pass
 
 
 def getDuplicatesToDelete(shelvefile, interactive=False):
@@ -188,8 +191,7 @@ def generateDuplicateFilelists(shelvefile, bundleHash=False, threshhold=1, quiet
     # Database for deleting records from the shelf later
     freshening = {}
 
-    bar = progressbar.ProgressBar(max_value=len(
-        tempdb.keys()), redirect_stdout=True)
+    bar = progressbar.ProgressBar(max_value=len(tempdb.keys()), redirect_stdout=True)
     i = 0
     for h in tempdb.keys():
         i += 1
@@ -203,10 +205,12 @@ def generateDuplicateFilelists(shelvefile, bundleHash=False, threshhold=1, quiet
                 # Remove any dead files from the main database
                 filenames.remove(filepath)
                 freshening[h] = filenames
-                tempdb[h] = filenames
                 if not quiet:
                     print("File {} has vanished. Now aware of {} unique hashes with missing records. ".format(
                         filepath, len(freshening.keys())))
+            else:
+                if DEBUG_FILE_EXISTS:
+                    print("GOOD {}".format(filepath))
 
         # If there is STILL more than one file with the hash:
         if len(filenames) >= threshhold:
@@ -226,7 +230,7 @@ def generateDuplicateFilelists(shelvefile, bundleHash=False, threshhold=1, quiet
         # revisit this when we look up one of the duplicate files.
         # Actually, because we're iterating over keys, this might be totally
         # unnecessary? Look into this.
-        tempdb[h] = []
+        # tempdb[h] = []
 
     if len(freshening.keys()) > 0:
         print("Adjusting {} updated records in database".format(
@@ -269,22 +273,28 @@ def magickCompareDuplicates(shelvefile):
 def renameFiles(shelvefile, mock=True, clobber=False):
     print("Renaming")
     operations = []
-    for (filenames, bundledHash) in generateDuplicateFilelists(shelvefile, bundleHash=True, threshhold=1, quiet=GLOBAL_QUIET_DEFAULT):
+    for (filenames, bundledHash) in generateDuplicateFilelists(shelvefile, bundleHash=True, threshhold=1):
         i = 0
         # for oldFileName in sortDuplicatePaths(filenames):
         for oldFileName in filenames:
             i += 1
-            newname = "{path}\\{hash}{suffix}.{ext}".format(
-                path="\\".join(oldFileName.split("\\")[:-1]),
-                hash=bundledHash,
-                # suffix=("_{}".format(i) if len(
-                #     filenames) is not 1 else ""),
-                suffix=("_{:08X}".format(CRC32(oldFileName)) if len(
-                    filenames) is not 1 else ""),
-                ext=oldFileName.split('.')[-1]
-            )
-            if newname != oldFileName:
-                operations.append((oldFileName, newname, bundledHash,))
+            try:
+                newname = "{path}\\{hash}{suffix}.{ext}".format(
+                    path="\\".join(oldFileName.split("\\")[:-1]),
+                    hash=bundledHash,
+                    # suffix=("_{}".format(i) if len(
+                    #     filenames) is not 1 else ""),
+                    suffix=("_{:08X}".format(CRC32(oldFileName)) if len(
+                        filenames) is not 1 else ""),
+                    ext=oldFileName.split('.')[-1]
+                )
+                if newname != oldFileName:
+                    operations.append((oldFileName, newname, bundledHash,))
+            except FileNotFoundError:
+                traceback.print_exc()
+                print(bundledHash)
+                print(filenames)
+                print(oldFileName)
 
     print("Processing {} file rename operations.".format(len(operations)))
     if len(operations) > 0:
