@@ -13,6 +13,7 @@ import traceback
 import shutil           # Moving, renaming.
 from time import time
 import binascii
+from send2trash import send2trash
 
 # Should we output debugging text about image hashes?
 HASHDEBUG = False
@@ -180,10 +181,11 @@ def getDuplicatesToDelete(shelvefile, interactive=False):
 
 def generateDuplicateFilelists(shelvefile, bundleHash=False, threshhold=1, quiet=GLOBAL_QUIET_DEFAULT):
     """Generate lists of files which all have the same hash."""
+    print("Querying database for duplicate pictures.")
     with shelve.open("databases/" + shelvefile, writeback=False) as db:
-        tempdb = {key: db[key]
-                  for key in db.keys()}  # Shallow copy of the shelf
+        tempdb = {key: db[key] for key in db.keys()}  # Shallow copy of the shelf
 
+    # Database for deleting records from the shelf later
     freshening = {}
 
     bar = progressbar.ProgressBar(max_value=len(
@@ -197,14 +199,14 @@ def generateDuplicateFilelists(shelvefile, bundleHash=False, threshhold=1, quiet
         filenames = tempdb[h]
         # Verify that all these files exist.
         for filepath in filenames:
-            for badfile in [filepath for filepath in filenames if not os.path.isfile(filepath)]:
+            if not os.path.isfile(filepath):
                 # Remove any dead files from the main database
-                filenames.remove(badfile)
+                filenames.remove(filepath)
                 freshening[h] = filenames
                 tempdb[h] = filenames
                 if not quiet:
                     print("File {} has vanished. Now aware of {} unique hashes with missing records. ".format(
-                        badfile, len(freshening.keys())))
+                        filepath, len(freshening.keys())))
 
         # If there is STILL more than one file with the hash:
         if len(filenames) >= threshhold:
@@ -227,7 +229,7 @@ def generateDuplicateFilelists(shelvefile, bundleHash=False, threshhold=1, quiet
         tempdb[h] = []
 
     if len(freshening.keys()) > 0:
-        print("Removing {} missing files from database".format(
+        print("Adjusting {} updated records in database".format(
             len(freshening.keys())))
         with shelve.open("databases/" + shelvefile, writeback=True) as db:
             for key in freshening.keys():
@@ -237,24 +239,12 @@ def generateDuplicateFilelists(shelvefile, bundleHash=False, threshhold=1, quiet
     bar.finish()
 
 
-def deleteFiles(shelvefile, filestodelete):
+def deleteFiles(filestodelete):
     print("Deleting files")
-    # DELETE: Generate a shell script that deletes files.
-    # This is a really bad misnomer and I need to correct it.
-
-    def mkDelDir(filepath):
-        return "deleted\\" + "\\".join(filepath.split("\\")[-4:-1]).replace(":", "")
-
     if len(filestodelete) > 0:
-        print("Deleting duplicates")
-        print("Files to delete:")
-        print("\n".join(["\t" + f for f in filestodelete]))
-
-        for subdir in set([mkDelDir(l) for l in filestodelete]):
-            os.makedirs(subdir, exist_ok=True)
         for file in filestodelete:
-            print("X <- {}".format(file))
-            shutil.move(file, mkDelDir(file))
+            print("[TRASH] <- {}".format(file))
+            send2trash(file)
 
 
 def magickCompareDuplicates(shelvefile):
@@ -314,13 +304,18 @@ def renameFiles(shelvefile, mock=True, clobber=False):
             try:
                 if mock:
                     raise NotImplementedError
-                elif (not clobber and os.path.isfile(new)):
-                    print("{} -X>< {}".format(old, new))
-                    continue
-                else:
-                    shutil.move(old, new)
-                    print("{} ---> {}".format(old, new))
-                    successfulOperations.append((old, new, bundledHash,))
+                if os.path.isfile(new):
+                    if not clobber:
+                        # Collide
+                        print("{} -X>< {}".format(old, new))
+                        continue
+                    else:
+                        print("[TRASH] <-- {}".format(new))
+                        send2trash(new)
+                # Perform move
+                shutil.move(old, new)
+                print("{} ---> {}".format(old, new))
+                successfulOperations.append((old, new, bundledHash,))
             except (FileNotFoundError, NotImplementedError) as e:
                 print("{} -X-> {}".format(old, new))
 
@@ -371,11 +366,12 @@ def parse_args():
 if __name__ == "__main__":
     args = parse_args()
     shelvefile = "{0}.s{1}".format(args.shelve, args.hashsize)
-    print("Running")
 
+    # Scan directories for files and populate database
     if not args.noscan:
         print("Listing files... (Use --noscan to skip this step)")
         imagePaths = sum([glob.glob(a, recursive=True) for a in args.files], [])
+        # File handling and fallbacks
         try:
             scanDirs(shelvefile, imagePaths,
                      recheck=args.recheck,
@@ -403,6 +399,8 @@ if __name__ == "__main__":
                              "databases/BAK.{}.{}".format(shelvefile, ext))
             except FileNotFoundError as e:
                 pass
+
+    # Run commands as requested
     if args.rename:
         renameFiles(shelvefile, mock=args.mock, clobber=args.clobber)
 
@@ -414,4 +412,4 @@ if __name__ == "__main__":
             shelvefile,
             interactive=args.interactive)
         if not args.mock:
-            deleteFiles(shelvefile, filesToDelete)
+            deleteFiles(filesToDelete)
