@@ -295,6 +295,7 @@ def renameFiles(shelvefile, mock=True, clobber=False):
                 print(bundledHash)
                 print(filenames)
                 print(oldFileName)
+                continue
 
     print("Processing {} file rename operations.".format(len(operations)))
     if len(operations) > 0:
@@ -305,7 +306,7 @@ def renameFiles(shelvefile, mock=True, clobber=False):
         with open(ufilename, "w+") as scriptfile:
             scriptfile.write("#!/bin/bash\n")
             for (old, new, bundledHash) in operations:
-                scriptfile.write('mv -v "{new}" "{old}" #this is stupid\n'.format(
+                scriptfile.write('mv -v "{new}" "{old}" # 8^y\n'.format(
                     old=old, new=new))
 
         # Rename files
@@ -320,8 +321,9 @@ def renameFiles(shelvefile, mock=True, clobber=False):
                         print("{} -X>< {}".format(old, new))
                         continue
                     else:
-                        print("[TRASH] <-- {}".format(new))
-                        send2trash(new)
+                        print("(Overwriting)")
+                        # print("[TRASH] <-- {}".format(new))
+                        # send2trash(new)
                 # Perform move
                 shutil.move(old, new)
                 print("{} ---> {}".format(old, new))
