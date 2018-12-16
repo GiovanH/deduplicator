@@ -20,9 +20,9 @@ HASHDEBUG = False
 # Should we output debugging text about sorting criteria?
 SORTDEBUG = False
 
-GLOBAL_QUIET_DEFAULT = False
+GLOBAL_QUIET_DEFAULT = True
 
-DEBUG_FILE_EXISTS = True
+DEBUG_FILE_EXISTS = False
 
 
 def CRC32(filename):
@@ -199,6 +199,12 @@ def generateDuplicateFilelists(shelvefile, bundleHash=False, threshhold=1, quiet
 
         # For each hash `h` and the list of filenames with that hash `filenames`:
         filenames = tempdb[h]
+
+        # Remove duplicate filenames
+        if len(set(filenames)) < len(filenames):
+            print("Duplicate file names detected in hash {}, cleaning.".format(h))
+            freshening[h] = list(set(filenames))
+
         # Verify that all these files exist.
         for filepath in filenames:
             if not os.path.isfile(filepath):
@@ -221,10 +227,6 @@ def generateDuplicateFilelists(shelvefile, bundleHash=False, threshhold=1, quiet
                 yield (filenames, h)
             else:
                 yield filenames
-
-        if len(set(filenames)) < len(filenames):
-            print("Duplicate file names detected in hash {}, cleaning.".format(h))
-            freshening[h] = list(set(filenames))
 
         # Clear the entry in the temporary database so that we don't
         # revisit this when we look up one of the duplicate files.
