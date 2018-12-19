@@ -14,6 +14,8 @@ import shutil           # Moving, renaming.
 from time import time
 import binascii
 from send2trash import send2trash
+import threading
+from time import sleep
 
 # Should we output debugging text about image hashes?
 HASHDEBUG = False
@@ -245,12 +247,33 @@ def generateDuplicateFilelists(shelvefile, bundleHash=False, threshhold=1, quiet
     bar.finish()
 
 
+def trash(file):
+    print("{} -> [TRASH]".format(file))
+    send2trash(file)
+    print("[TRASH] <- {}".format(file))
+
+
+def threadWait(threshhold, interval, quiet=False):
+    if threshhold < 1:
+        threshhold = 1
+    while (threading.active_count() > threshhold):
+        c = threading.active_count()
+        if not quiet:
+            print("Waiting for {} job{} to finish:".format(c, "s" if c > 1 else ""))
+            print("\n".join(threading.enumerate()))
+        sleep(interval)
+
+
 def deleteFiles(filestodelete):
     print("Deleting files")
     if len(filestodelete) > 0:
         for file in filestodelete:
-            print("[TRASH] <- {}".format(file))
-            send2trash(file)
+            threadWait(20, 0.5, quiet=True)
+            threading.Thread(
+                name="rm {}".format(file),
+                target=trash, args=(file,)).start()
+    # Cleanup
+    print("Finished.")
 
 
 def magickCompareDuplicates(shelvefile):
