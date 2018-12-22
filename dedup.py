@@ -14,8 +14,11 @@ import shutil           # Moving, renaming.
 from time import time
 import binascii
 from send2trash import send2trash
-import threading
-from time import sleep
+import loom
+from os import sep
+import subprocess
+
+# Todo: Replace some sep formatting with os.path.join
 
 # Should we output debugging text about image hashes?
 HASHDEBUG = False
@@ -57,13 +60,13 @@ def sortDuplicatePaths(filenames):
         upper = x.upper()
         xtuple = (
             -imageSize(x),  # Put full resolution images higher
-            -upper.rfind("F:\\"),  # Put images in drive F higher.
+            -upper.rfind("F:{s}".format(s=sep)),  # Put images in drive F higher.
             upper.rfind("UNSORTED"),  # Put "unsorted" images lower
             # Put images in an exports folder lower
-            upper.rfind("\\EXPORTS\\"),
+            upper.rfind("{s}EXPORTS{s}".format(s=sep)),
             # Put images with short folder paths higher
-            len(x[:x.rfind("\\")]),
-            upper.rfind("\\IPAD\\"),  # Put images with iPad in the path lower
+            len(x[:x.rfind(sep)]),
+            upper.rfind("{s}IPAD{s}".format(s=sep)),  # Put images with iPad in the path lower
             len(x)  # Put images with short total paths higher
         )
         if SORTDEBUG:
@@ -253,46 +256,41 @@ def trash(file):
     print("[TRASH] <- {}".format(file))
 
 
-def threadWait(threshhold, interval, quiet=False):
-    if threshhold < 1:
-        threshhold = 1
-    while (threading.active_count() > threshhold):
-        c = threading.active_count()
-        if not quiet:
-            print("Waiting for {} job{} to finish:".format(c, "s" if c > 1 else ""))
-            print("\n".join(threading.enumerate()))
-        sleep(interval)
-
-
 def deleteFiles(filestodelete):
     print("Deleting files")
     if len(filestodelete) > 0:
         for file in filestodelete:
-            threadWait(20, 0.5, quiet=True)
-            threading.Thread(
+            loom.threadWait(20, 0.5, quiet=True)
+            loom.thread(
                 name="rm {}".format(file),
-                target=trash, args=(file,)).start()
+                target=trash, args=(file,))
     # Cleanup
+    loom.threadWait(1, 0.5)
     print("Finished.")
 
 
 def magickCompareDuplicates(shelvefile):
-    print("Generating compare list")
     # If there are no duplicates, just skip.
     if next(generateDuplicateFilelists(shelvefile, bundleHash=True, threshhold=2)) is None:
         print("No duplicates to compare!")
         return
-
     # Otherwise, do the thing.
-    with open("docompare_{}_{}.bat".format(shelvefile, str(int(time()))), "w+") as file:
-        file.write("mkdir comparison\\{} \n".format(shelvefile))
-        for (filenames, bundledHash) in generateDuplicateFilelists(shelvefile, bundleHash=True, threshhold=2):
-            file.write("magick montage -label \"%%i\" -mode concatenate {0} {1}".format(
-                " ".join(['"{}"'.format(filename)
-                          for filename in sortDuplicatePaths(filenames)]),
-                '"./comparison/{}/{}.jpg"'.format(shelvefile, bundledHash)
-            ))
-            file.write("\n")
+    bundledDuplicateFileList = generateDuplicateFilelists(shelvefile, bundleHash=True, threshhold=2)
+    os.makedirs("./comparison/{}/".format(shelvefile), exist_ok=True)
+    for (filenames, bundledHash) in bundledDuplicateFileList:
+        loom.threadWait(30, 1)
+        loom.thread(target=lambda: runMagickCommand(shelvefile, "compare -compose src", "compare_c", filenames, bundledHash))
+        loom.thread(target=lambda: runMagickCommand(shelvefile, "montage -label \"%%i\" -mode concatenate", "compare_s", filenames, bundledHash))
+
+
+def runMagickCommand(shelvefile, precmd, fileact, filenames, bundledHash):
+    outfile = "./comparison/{}/{}_{}.jpg".format(shelvefile, bundledHash, fileact)
+    command = ["magick"]
+    command += precmd.split(" ")
+    command += sortDuplicatePaths(filenames)
+    command.append(outfile)
+    print(outfile)
+    subprocess.call(command)
 
 
 def renameFiles(shelvefile, mock=True, clobber=False):
@@ -304,8 +302,9 @@ def renameFiles(shelvefile, mock=True, clobber=False):
         for oldFileName in filenames:
             i += 1
             try:
-                newname = "{path}\\{hash}{suffix}.{ext}".format(
-                    path="\\".join(oldFileName.split("\\")[:-1]),
+                newname = "{path}{s}{hash}{suffix}.{ext}".format(
+                    path=sep.join(oldFileName.split(sep)[:-1]),
+                    s=sep,
                     hash=bundledHash,
                     # suffix=("_{}".format(i) if len(
                     #     filenames) is not 1 else ""),
