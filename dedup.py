@@ -1,8 +1,7 @@
-# USAGE
-# python index.py --dataset images --shelve db.shelve
 
 # import the necessary packages
-from PIL import Image   # Image IO libraries
+
+import loom
 import imagehash        # Perceptual image hashing
 import argparse         # Argument parsing
 import shelve           # Persistant data storage
@@ -10,13 +9,14 @@ import glob             # File globbing
 import progressbar      # Progress bars
 import os.path          # isfile() method
 import traceback
-import shutil           # Moving, renaming.
-from time import time
-import binascii
-from send2trash import send2trash
-import loom
-from os import sep
 import subprocess
+import shutil           # Moving, renaming.
+
+from time import time   # Time IDs
+from PIL import Image   # Image IO libraries
+from binascii import crc32
+from send2trash import send2trash
+from os import sep
 
 # Todo: Replace some sep formatting with os.path.join
 
@@ -34,7 +34,7 @@ PROGRESSBAR_ALLOWED = True
 
 def CRC32(filename):
     buf = open(filename, 'rb').read()
-    buf = (binascii.crc32(buf) & 0xFFFFFFFF)
+    buf = (crc32(buf) & 0xFFFFFFFF)
     return buf
 #     return "%08X" % buf
 
@@ -278,13 +278,11 @@ def deleteFiles(filestodelete):
 
 def magickCompareDuplicates(shelvefile):
     print("Running comparisons.")
-    # If there are no duplicates, just skip.
-    # if next(generateDuplicateFilelists(shelvefile, bundleHash=True, threshhold=2)) is None:
-    #     print("No duplicates to compare!")
-    #     return
-    # Not needed with dynamic makedirs.
+    for destfldr in [shelvefile + "_sizediff", shelvefile]:
+        os.makedirs("./comparison/{}/".format(destfldr), exist_ok=True)
 
     # Otherwise, do the thing.
+
     for (filenames, bundledHash) in generateDuplicateFilelists(shelvefile, bundleHash=True, threshhold=2):
         loom.threadWait(24, 1)
 
@@ -314,14 +312,6 @@ for trigger in *_pullTrigger.sh; do
 done
 """)
             triggerFile.write("\nrm -v ./XXX_ALLFILES_pullTrigger.sh")
-#  -highlight-color White -lowlight-color Black
-
-# """
-# magick convert "F:\Franchises\Steven Universe\Lapis\1330cd4f79b19991db9da15b35117d0ef4bb_72EBBFAF.png" "C:\Users\Seth
-# \Exports\Gallery\Su\1330cd4f79b19991db9da15b35117d0ef4bb_00C36AFE.png" -compose src -fuzz 10% -compare -set option:dist
-#  "%[distortion]" label:"Distortion: %[dist]" -gravity Center -append  "./comparison/allsmut.s12/1330cd4f79b19991db9da15
-# b35117d0ef4bb_compare_f10.jpg"
-# """
 
 
 def runMagickCommand(shelvefile, precmd, midcmd, fileact, sortedFilenames, bundledHash):
@@ -350,8 +340,6 @@ def renameFiles(shelvefile, mock=True, clobber=False):
                     path=sep.join(oldFileName.split(sep)[:-1]),
                     s=sep,
                     hash=bundledHash,
-                    # suffix=("_{}".format(i) if len(
-                    #     filenames) is not 1 else ""),
                     suffix=("_{:08X}".format(CRC32(oldFileName)) if len(
                         filenames) is not 1 else ""),
                     ext=oldFileName.split('.')[-1]
@@ -390,8 +378,7 @@ def renameFiles(shelvefile, mock=True, clobber=False):
                         continue
                     else:
                         print("(Overwriting)")
-                        # print("[TRASH] <-- {}".format(new))
-                        # send2trash(new)
+                        loom.thread(name="[TRASH] <-- {}".format(new), target=send2trash(new))
                 # Perform move
                 shutil.move(old, new)
                 print("{} ---> {}".format(old, new))
