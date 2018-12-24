@@ -16,5 +16,13 @@ def threadWait(threshhold, interval, quiet=False):
 
 
 def thread(*args, **kwargs):
+    # args.get("target")()
     t = threading.Thread(*args, **kwargs)
     t.start()
+
+
+class Loom():
+    def __init__(self):
+        super(Loom, self).__init__()
+
+        

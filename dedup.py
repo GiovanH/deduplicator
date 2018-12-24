@@ -29,6 +29,8 @@ GLOBAL_QUIET_DEFAULT = True
 
 DEBUG_FILE_EXISTS = False
 
+PROGRESSBAR_ALLOWED = True
+
 
 def CRC32(filename):
     buf = open(filename, 'rb').read()
@@ -37,22 +39,24 @@ def CRC32(filename):
 #     return "%08X" % buf
 
 
+def imageSize(filename):
+    # Get a sortable integer representing the number of pixels in an image.
+    try:
+        w, h = Image.open(filename).size
+        return w * h
+    except FileNotFoundError:
+        print("WARNING! File not found: ", filename)
+        return 0
+    except OSError:
+        print("WARNING! OS error with file: ", filename)
+        return 0
+
+
 def sortDuplicatePaths(filenames):
     """
     Takes a list of files known to be duplicates
     and sorts them in order of "desirability"
     """
-    # Get a sortable integer representing the number of pixels in an image.
-    def imageSize(filename):
-        try:
-            w, h = Image.open(filename).size
-            return w * h
-        except FileNotFoundError:
-            print("WARNING! File not found: ", filename)
-            return 0
-        except OSError:
-            print("WARNING! OS error with file: ", filename)
-            return 0
 
     # Sorting key
     def sort(x):
@@ -196,11 +200,13 @@ def generateDuplicateFilelists(shelvefile, bundleHash=False, threshhold=1, quiet
     # Database for deleting records from the shelf later
     freshening = {}
 
-    bar = progressbar.ProgressBar(max_value=len(tempdb.keys()), redirect_stdout=True)
-    i = 0
+    if PROGRESSBAR_ALLOWED:
+        pbar = progressbar.ProgressBar(max_value=len(tempdb.keys()), redirect_stdout=True)
+        i = 0
     for h in tempdb.keys():
-        i += 1
-        bar.update(i)
+        if PROGRESSBAR_ALLOWED:
+            i += 1
+            pbar.update(i)
 
         # For each hash `h` and the list of filenames with that hash `filenames`:
         filenames = tempdb[h]
@@ -247,7 +253,8 @@ def generateDuplicateFilelists(shelvefile, bundleHash=False, threshhold=1, quiet
                 db[key] = freshening[key]
     else:
         print("No files have vanished.")
-    bar.finish()
+    if PROGRESSBAR_ALLOWED:
+        pbar.finish()
 
 
 def trash(file):
@@ -262,7 +269,7 @@ def deleteFiles(filestodelete):
         for file in filestodelete:
             loom.threadWait(20, 0.5, quiet=True)
             loom.thread(
-                name="rm {}".format(file),
+                name="trash {}".format(file),
                 target=trash, args=(file,))
     # Cleanup
     loom.threadWait(1, 0.5)
@@ -270,26 +277,63 @@ def deleteFiles(filestodelete):
 
 
 def magickCompareDuplicates(shelvefile):
+    print("Running comparisons.")
     # If there are no duplicates, just skip.
-    if next(generateDuplicateFilelists(shelvefile, bundleHash=True, threshhold=2)) is None:
-        print("No duplicates to compare!")
-        return
+    # if next(generateDuplicateFilelists(shelvefile, bundleHash=True, threshhold=2)) is None:
+    #     print("No duplicates to compare!")
+    #     return
+    # Not needed with dynamic makedirs.
+
     # Otherwise, do the thing.
-    bundledDuplicateFileList = generateDuplicateFilelists(shelvefile, bundleHash=True, threshhold=2)
-    os.makedirs("./comparison/{}/".format(shelvefile), exist_ok=True)
-    for (filenames, bundledHash) in bundledDuplicateFileList:
-        loom.threadWait(30, 1)
-        loom.thread(target=lambda: runMagickCommand(shelvefile, "compare -compose src", "compare_c", filenames, bundledHash))
-        loom.thread(target=lambda: runMagickCommand(shelvefile, "montage -label \"%%i\" -mode concatenate", "compare_s", filenames, bundledHash))
+    for (filenames, bundledHash) in generateDuplicateFilelists(shelvefile, bundleHash=True, threshhold=2):
+        loom.threadWait(24, 1)
+
+        sizediff = (len(set([imageSize(path) for path in filenames])) > 1)
+
+        destfldr = (shelvefile if not sizediff else (shelvefile + "_sizediff"))
+        os.makedirs("./comparison/{}/".format(destfldr), exist_ok=True)
+
+        sortedFilenames = sortDuplicatePaths(filenames)
+        loom.thread(name="{} | montage".format(bundledHash), target=lambda: runMagickCommand(destfldr, "montage -label %i -mode concatenate", None, "compare_montage", sortedFilenames, bundledHash))
+        if not sizediff:
+            loom.thread(target=lambda: runMagickCommand(destfldr, "compare -fuzz 10%% -compose src -highlight-color Black -lowlight-color White", None, "compare", sortedFilenames, bundledHash))
+        with open("./comparison/{}/{}_pullTrigger.sh".format(destfldr, bundledHash), "w", newline='\n') as triggerFile:
+            triggerFile.write("#!/bin/bash")
+            triggerFile.write("\nrm -v {}".format(" ".join('"{}"'.format(filename) for filename in sortedFilenames[1:])))
+            triggerFile.write("\nrm -v ./{}*.jpg".format(bundledHash))
+            triggerFile.write("\nrm -v ./{}_pullTrigger.sh".format(bundledHash))
+
+    for destfldr in [shelvefile + "_sizediff", shelvefile]:
+        with open("./comparison/{}/XXX_ALLFILES_pullTrigger.sh".format(destfldr), "w", newline='\n') as triggerFile:
+            triggerFile.write("#!/bin/bash")
+            triggerFile.write(
+"""\n
+for trigger in *_pullTrigger.sh; do
+\techo $trigger
+\tbash $trigger
+done
+""")
+            triggerFile.write("\nrm -v ./XXX_ALLFILES_pullTrigger.sh")
+#  -highlight-color White -lowlight-color Black
+
+# """
+# magick convert "F:\Franchises\Steven Universe\Lapis\1330cd4f79b19991db9da15b35117d0ef4bb_72EBBFAF.png" "C:\Users\Seth
+# \Exports\Gallery\Su\1330cd4f79b19991db9da15b35117d0ef4bb_00C36AFE.png" -compose src -fuzz 10% -compare -set option:dist
+#  "%[distortion]" label:"Distortion: %[dist]" -gravity Center -append  "./comparison/allsmut.s12/1330cd4f79b19991db9da15
+# b35117d0ef4bb_compare_f10.jpg"
+# """
 
 
-def runMagickCommand(shelvefile, precmd, fileact, filenames, bundledHash):
+def runMagickCommand(shelvefile, precmd, midcmd, fileact, sortedFilenames, bundledHash):
     outfile = "./comparison/{}/{}_{}.jpg".format(shelvefile, bundledHash, fileact)
     command = ["magick"]
     command += precmd.split(" ")
-    command += sortDuplicatePaths(filenames)
+    command += sortedFilenames
+    if midcmd != "" and midcmd is not None:
+        command += midcmd.split(" ")
     command.append(outfile)
-    print(outfile)
+    # print(command)
+    # print("\n".join(command))
     subprocess.call(command)
 
 
@@ -399,7 +443,7 @@ def parse_args():
     return ap.parse_args()
 
 
-if __name__ == "__main__":
+def main():
     args = parse_args()
     shelvefile = "{0}.s{1}".format(args.shelve, args.hashsize)
 
@@ -449,3 +493,11 @@ if __name__ == "__main__":
             interactive=args.interactive)
         if not args.mock:
             deleteFiles(filesToDelete)
+
+
+if __name__ == "__main__":
+    try:
+        main()
+    except KeyboardInterrupt as e:
+        traceback.print_exc()
+        raise
