@@ -2,6 +2,9 @@
 comparison/
 databases/
 deleted/
+script/
+*.sh
+test/
 do*.sh
 do*.bat
 oldcmd/

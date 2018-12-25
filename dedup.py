@@ -309,6 +309,7 @@ def magickCompareDuplicates(shelvefile):
 for trigger in *_pullTrigger.sh; do
 \techo $trigger
 \tbash $trigger
+\trm -v $trigger 2>/dev/null
 done
 """)
             triggerFile.write("\nrm -v ./XXX_ALLFILES_pullTrigger.sh")
