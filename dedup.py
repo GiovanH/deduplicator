@@ -1,7 +1,4 @@
-
-# import the necessary packages
-
-import loom
+import loom             # Simple threading wrapper
 import imagehash        # Perceptual image hashing
 import argparse         # Argument parsing
 import shelve           # Persistant data storage
@@ -9,7 +6,7 @@ import glob             # File globbing
 import progressbar      # Progress bars
 import os.path          # isfile() method
 import traceback
-import subprocess
+import subprocess       # Magick runner
 import shutil           # Moving, renaming.
 
 from time import time   # Time IDs
@@ -230,14 +227,12 @@ def generateDuplicateFilelists(shelvefile, bundleHash=False, threshhold=1, quiet
                     print("GOOD {}".format(filepath))
 
         for filepath in missing_files:
-            print(filepath, "is missing, removing")
             filenames.remove(filepath)
             freshening[h] = filenames
             if not quiet:
                 print("File {} has vanished. Now aware of {} unique hashes with missing records. ".format(
                     filepath, len(freshening.keys())))
-                print("Hash {} now has {} identical files.".format(h, len(filenames)))
-
+                
         # if DEBUG_FILE_EXISTS:
         for filepath in filenames:
             assert os.path.isfile(filepath), filepath
@@ -291,7 +286,7 @@ def magickCompareDuplicates(shelvefile):
     # Otherwise, do the thing.
 
     for (sortedFilenames, bundledHash) in generateDuplicateFilelists(shelvefile, bundleHash=True, threshhold=2):
-        loom.threadWait(9, 1)
+        loom.threadWait(9, 1, quiet=True)
 
         sizediff = (len(set([imageSize(path) for path in sortedFilenames])) > 1)
 
@@ -338,26 +333,28 @@ def runMagickCommand(shelvefile, precmd, midcmd, fileact, sortedFilenames, bundl
 def renameFiles(shelvefile, mock=True, clobber=False):
     print("Renaming")
     operations = []
-    for (filenames, bundledHash) in generateDuplicateFilelists(shelvefile, bundleHash=True, threshhold=1):
+    for (filepaths, bundledHash) in generateDuplicateFilelists(shelvefile, bundleHash=True, threshhold=1):
         i = 0
-        # for oldFileName in sortDuplicatePaths(filenames):
-        for oldFileName in filenames:
+        # for oldFileName in sortDuplicatePaths(filepaths):
+        for oldFilePath in filepaths:
             i += 1
+            (oldFileDir, oldFileName) = os.path.split(oldFilePath)
             try:
-                newname = "{path}{s}{hash}{suffix}.{ext}".format(
-                    path=sep.join(oldFileName.split(sep)[:-1]),
-                    s=sep,
-                    hash=bundledHash,
-                    suffix=("_{:08X}".format(CRC32(oldFileName)) if len(
-                        filenames) is not 1 else ""),
-                    ext=oldFileName.split('.')[-1]
+                newname = os.path.join(
+                    oldFileDir,
+                    "{hash}{suffix}.{ext}".format(
+                        hash=bundledHash,
+                        suffix=("_{:08X}".format(CRC32(oldFileName)) if len(
+                            filepaths) is not 1 else ""),
+                        ext=oldFileName.split('.')[-1]
+                    )
                 )
-                if newname != oldFileName:
-                    operations.append((oldFileName, newname, bundledHash,))
+                if newname != oldFilePath:
+                    operations.append((oldFilePath, newname, bundledHash,))
             except FileNotFoundError:
                 traceback.print_exc()
                 print(bundledHash)
-                print(filenames)
+                print(filepaths)
                 print(oldFileName)
                 continue
 
@@ -444,13 +441,16 @@ def main():
 
     # Scan directories for files and populate database
     if not args.noscan:
-        print("Listing files... (Use --noscan to skip this step)")
+        print("Crawling for files... (Use --noscan to skip this step)")
         imagePaths = sum([glob.glob(a, recursive=True) for a in args.files], [])
         # File handling and fallbacks
-        try:
+        
+        def scan():
             scanDirs(shelvefile, imagePaths,
                      recheck=args.recheck,
                      hash_size=args.hashsize)
+        try:
+            scan()
         except Exception as e:
             print("Database corrupted. Restoring.")
             for databaseFile in ["databases/{}.{}".format(shelvefile, ext) for ext in ["dir", "bak", "dat"]]:
@@ -464,9 +464,7 @@ def main():
                                  "databases/{}.{}".format(shelvefile, ext))
                 except FileNotFoundError as e:
                     pass
-            scanDirs(shelvefile, imagePaths,
-                     recheck=args.recheck,
-                     hash_size=args.hashsize)
+            scan()
         print("Backing up database.")
         for ext in ["dir", "bak", "dat"]:
             try:
