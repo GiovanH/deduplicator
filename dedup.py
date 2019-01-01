@@ -41,11 +41,13 @@ def CRC32(filename):
 
 def imageSize(filename):
     # Get a sortable integer representing the number of pixels in an image.
+    assert os.path.isfile(filename), filename
     try:
         w, h = Image.open(filename).size
         return w * h
     except FileNotFoundError:
         print("WARNING! File not found: ", filename)
+        raise AssertionError(filename)
         return 0
     except OSError:
         print("WARNING! OS error with file: ", filename)
@@ -140,13 +142,13 @@ def getDuplicatesToDelete(shelvefile, interactive=False):
     print("Checking database for duplicates")
     i = 0
     for filenames in generateDuplicateFilelists(shelvefile, threshhold=2):
-        sortedFiles = sortDuplicatePaths(filenames)
+        # filenames = sortDuplicatePaths(filenames)
         if interactive:
             # The user gets to pick the image to keep.
             # Print up a pretty menu.
             print()
-            for i in range(0, len(sortedFiles)):
-                print("{0}. {1}".format(i, sortedFiles[i]))
+            for i in range(0, len(filenames)):
+                print("{0}. {1}".format(i, filenames[i]))
             # Loop over the menu until the user selects a valid option
             goodAns = False
             while not goodAns:
@@ -165,20 +167,20 @@ def getDuplicatesToDelete(shelvefile, interactive=False):
                         ans = 0
 
                     index = int(ans)
-                    goingtokeep = sortedFiles[index]
-                    goingtodelete = sortedFiles[:index] + \
-                        sortedFiles[(index + 1):]
+                    goingtokeep = filenames[index]
+                    goingtodelete = filenames[:index] + \
+                        filenames[(index + 1):]
                     goodAns = True
                 except ValueError:
                     print("Not a valid number. ")  # Have another go.
         else:  # Not interactive.
             # We keep the FIRST file in the sort.
             # We'll delete the rest.
-            goingtokeep = sortedFiles[0]
-            goingtodelete = sortedFiles[1:]
+            goingtokeep = filenames[0]
+            goingtodelete = filenames[1:]
             if (goingtokeep is None or len(goingtokeep) == 0):
                 # Just in case.
-                for sym in [sortedFiles, goingtokeep, goingtodelete]:
+                for sym in [filenames, goingtokeep, goingtodelete]:
                     print(sym)
                 raise AssertionError("Internal logic consistancy error. Program instructed to consider ALL images with a given hash as extraneous. Please debug.")
         # However the method, add all our doomed files to the list.
@@ -188,7 +190,7 @@ def getDuplicatesToDelete(shelvefile, interactive=False):
         print("\n\t* " + goingtokeep)
         print(
             "\n".join(["\t  " + f for f in goingtodelete]))
-    return filestodelete
+    return sortDuplicatePaths(filestodelete)
 
 
 def generateDuplicateFilelists(shelvefile, bundleHash=False, threshhold=1, quiet=GLOBAL_QUIET_DEFAULT):
@@ -203,6 +205,7 @@ def generateDuplicateFilelists(shelvefile, bundleHash=False, threshhold=1, quiet
     if PROGRESSBAR_ALLOWED:
         pbar = progressbar.ProgressBar(max_value=len(tempdb.keys()), redirect_stdout=True)
         i = 0
+
     for h in tempdb.keys():
         if PROGRESSBAR_ALLOWED:
             i += 1
@@ -210,24 +213,34 @@ def generateDuplicateFilelists(shelvefile, bundleHash=False, threshhold=1, quiet
 
         # For each hash `h` and the list of filenames with that hash `filenames`:
         filenames = tempdb[h]
+        # filenames = [filepath for filepath in tempdb[h] if os.path.isfile(filepath)]
 
         # Remove duplicate filenames
         if len(set(filenames)) < len(filenames):
             print("Duplicate file names detected in hash {}, cleaning.".format(h))
-            freshening[h] = list(set(filenames))
+            filenames = freshening[h] = list(set(filenames))
 
         # Verify that all these files exist.
+        missing_files = []
         for filepath in filenames:
             if not os.path.isfile(filepath):
-                # Remove any dead files from the main database
-                filenames.remove(filepath)
-                freshening[h] = filenames
-                if not quiet:
-                    print("File {} has vanished. Now aware of {} unique hashes with missing records. ".format(
-                        filepath, len(freshening.keys())))
+                missing_files.append(filepath)
             else:
                 if DEBUG_FILE_EXISTS:
                     print("GOOD {}".format(filepath))
+
+        for filepath in missing_files:
+            print(filepath, "is missing, removing")
+            filenames.remove(filepath)
+            freshening[h] = filenames
+            if not quiet:
+                print("File {} has vanished. Now aware of {} unique hashes with missing records. ".format(
+                    filepath, len(freshening.keys())))
+                print("Hash {} now has {} identical files.".format(h, len(filenames)))
+
+        # if DEBUG_FILE_EXISTS:
+        for filepath in filenames:
+            assert os.path.isfile(filepath), filepath
 
         # If there is STILL more than one file with the hash:
         if len(filenames) >= threshhold:
@@ -239,20 +252,14 @@ def generateDuplicateFilelists(shelvefile, bundleHash=False, threshhold=1, quiet
             else:
                 yield filenames
 
-        # Clear the entry in the temporary database so that we don't
-        # revisit this when we look up one of the duplicate files.
-        # Actually, because we're iterating over keys, this might be totally
-        # unnecessary? Look into this.
-        # tempdb[h] = []
-
     if len(freshening.keys()) > 0:
         print("Adjusting {} updated records in database".format(
             len(freshening.keys())))
         with shelve.open("databases/" + shelvefile, writeback=True) as db:
             for key in freshening.keys():
                 db[key] = freshening[key]
-    else:
-        print("No files have vanished.")
+        freshening.clear()
+
     if PROGRESSBAR_ALLOWED:
         pbar.finish()
 
@@ -283,17 +290,17 @@ def magickCompareDuplicates(shelvefile):
 
     # Otherwise, do the thing.
 
-    for (filenames, bundledHash) in generateDuplicateFilelists(shelvefile, bundleHash=True, threshhold=2):
-        loom.threadWait(24, 1)
+    for (sortedFilenames, bundledHash) in generateDuplicateFilelists(shelvefile, bundleHash=True, threshhold=2):
+        loom.threadWait(9, 1)
 
-        sizediff = (len(set([imageSize(path) for path in filenames])) > 1)
+        sizediff = (len(set([imageSize(path) for path in sortedFilenames])) > 1)
 
         destfldr = (shelvefile if not sizediff else (shelvefile + "_sizediff"))
         os.makedirs("./comparison/{}/".format(destfldr), exist_ok=True)
 
-        sortedFilenames = sortDuplicatePaths(filenames)
         loom.thread(name="{} | montage".format(bundledHash), target=lambda: runMagickCommand(destfldr, "montage -label %i -mode concatenate", None, "compare_montage", sortedFilenames, bundledHash))
         if not sizediff:
+            # TODO: Detect color!
             loom.thread(target=lambda: runMagickCommand(destfldr, "compare -fuzz 10%% -compose src -highlight-color Black -lowlight-color White", None, "compare", sortedFilenames, bundledHash))
         with open("./comparison/{}/{}_pullTrigger.sh".format(destfldr, bundledHash), "w", newline='\n') as triggerFile:
             triggerFile.write("#!/bin/bash")
@@ -302,7 +309,7 @@ def magickCompareDuplicates(shelvefile):
             triggerFile.write("\nrm -v ./{}_pullTrigger.sh".format(bundledHash))
 
     for destfldr in [shelvefile + "_sizediff", shelvefile]:
-        with open("./comparison/{}/XXX_ALLFILES_pullTrigger.sh".format(destfldr), "w", newline='\n') as triggerFile:
+        with open("./comparison/{}/XXX_ALLFILES_pullTrigger_.sh".format(destfldr), "w", newline='\n') as triggerFile:
             triggerFile.write("#!/bin/bash")
             triggerFile.write(
 """\n
