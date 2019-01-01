@@ -344,7 +344,7 @@ def renameFiles(shelvefile, mock=True, clobber=False):
                     oldFileDir,
                     "{hash}{suffix}.{ext}".format(
                         hash=bundledHash,
-                        suffix=("_{:08X}".format(CRC32(oldFileName)) if len(
+                        suffix=("_{:08X}".format(CRC32(oldFilePath)) if len(
                             filepaths) is not 1 else ""),
                         ext=oldFileName.split('.')[-1]
                     )
