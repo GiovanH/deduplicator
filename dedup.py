@@ -28,6 +28,8 @@ DEBUG_FILE_EXISTS = False
 
 PROGRESSBAR_ALLOWED = True
 
+BAD_WORDS = []
+
 
 def CRC32(filename):
     buf = open(filename, 'rb').read()
@@ -35,13 +37,21 @@ def CRC32(filename):
     return buf
 #     return "%08X" % buf
 
+fsizecache = {}
+
 
 def imageSize(filename):
     # Get a sortable integer representing the number of pixels in an image.
-    assert os.path.isfile(filename), filename
+    # assert os.path.isfile(filename), filename
+    hit = fsizecache.get(filename)
+    if hit:
+        return hit
+
     try:
         w, h = Image.open(filename).size
-        return w * h
+        size = w * h
+        fsizecache[filename] = size
+        return size
     except FileNotFoundError:
         print("WARNING! File not found: ", filename)
         raise AssertionError(filename)
@@ -63,10 +73,10 @@ def sortDuplicatePaths(filenames):
         upper = x.upper()
         xtuple = (
             -imageSize(x),  # Put full resolution images higher
-            -upper.rfind("F:{s}".format(s=sep)),  # Put images in drive F higher.
-            upper.rfind("UNSORTED"),  # Put "unsorted" images lower
+            -upper.count("F:{s}".format(s=sep)),  # Put images in drive F higher.
+            sum([upper.count(x.upper()) for x in BAD_WORDS]),  # Put images with bad words lower
             # Put images in an exports folder lower
-            upper.rfind("{s}EXPORTS{s}".format(s=sep)),
+            upper.count("{s}EXPORTS{s}".format(s=sep)),
             # Put images with short folder paths higher
             len(x[:x.rfind(sep)]),
             upper.rfind("{s}IPAD{s}".format(s=sep)),  # Put images with iPad in the path lower
@@ -80,6 +90,27 @@ def sortDuplicatePaths(filenames):
     return st
 
 
+def prune(shelvefile, verbose=False, show_pbar=True):
+    print("Removing dead hashes")
+    empties = []
+    with shelve.open("databases/" + shelvefile, writeback=False) as db:
+        for key in db.keys():
+            if db.get(key) == []:
+                empties.append(key)
+
+        pbar = progressbar.ProgressBar(max_value=len(empties), redirect_stdout=True) if show_pbar else None
+        i = 0
+        for key in empties:
+            db.pop(key)
+            if pbar:
+                i += 1
+                pbar.update(i)
+            if verbose:
+                print("Cleared key:", key)
+        if pbar:
+            pbar.finish
+
+
 def scanDirs(shelvefile, imagePaths, recheck=False, hash_size=16):
     # Resolve glob to image paths
 
@@ -90,6 +121,9 @@ def scanDirs(shelvefile, imagePaths, recheck=False, hash_size=16):
         with shelve.open("databases/" + shelvefile, writeback=False) as db:
             knownPaths = set([item for sublist in db.values()
                               for item in sublist])
+
+    # prune(shelvefile)
+    # not yet implemented
 
     # SCAN: Scan filesystem for images and hash them.
 
@@ -187,7 +221,7 @@ def getDuplicatesToDelete(shelvefile, interactive=False):
         print("\n\t* " + goingtokeep)
         print(
             "\n".join(["\t  " + f for f in goingtodelete]))
-    return sortDuplicatePaths(filestodelete)
+    return filestodelete
 
 
 def generateDuplicateFilelists(shelvefile, bundleHash=False, threshhold=1, quiet=GLOBAL_QUIET_DEFAULT):
@@ -232,13 +266,14 @@ def generateDuplicateFilelists(shelvefile, bundleHash=False, threshhold=1, quiet
             if not quiet:
                 print("File {} has vanished. Now aware of {} unique hashes with missing records. ".format(
                     filepath, len(freshening.keys())))
-                
-        # if DEBUG_FILE_EXISTS:
-        for filepath in filenames:
-            assert os.path.isfile(filepath), filepath
+
+        if DEBUG_FILE_EXISTS:
+            for filepath in filenames:
+                assert os.path.isfile(filepath), filepath
 
         # If there is STILL more than one file with the hash:
         if len(filenames) >= threshhold:
+            filenames = sortDuplicatePaths(filenames)
             if not quiet:
                 print("Found {0} duplicate images for hash [{1}]".format(
                     len(filenames), h))
@@ -268,14 +303,15 @@ def trash(file):
 def deleteFiles(filestodelete):
     print("Deleting files")
     if len(filestodelete) > 0:
+        delSpool = loom.Spool(20, start=True)
         for file in filestodelete:
-            loom.threadWait(20, 0.5, quiet=True)
-            loom.thread(
+            delSpool.enqueue(
                 name="trash {}".format(file),
-                target=trash, args=(file,))
-    # Cleanup
-    loom.threadWait(1, 0.5)
-    print("Finished.")
+                target=trash, args=(file,)
+            )
+        # Cleanup
+        delSpool.finish(verbose=True)
+        print("Finished.")
 
 
 def magickCompareDuplicates(shelvefile):
@@ -284,19 +320,21 @@ def magickCompareDuplicates(shelvefile):
         os.makedirs("./comparison/{}/".format(destfldr), exist_ok=True)
 
     # Otherwise, do the thing.
+    magickSpool = loom.Spool(4, start=True)
 
     for (sortedFilenames, bundledHash) in generateDuplicateFilelists(shelvefile, bundleHash=True, threshhold=2):
-        loom.threadWait(9, 1, quiet=True)
+        # loom.threadWait(9, 1, quiet=True)
 
         sizediff = (len(set([imageSize(path) for path in sortedFilenames])) > 1)
 
         destfldr = (shelvefile if not sizediff else (shelvefile + "_sizediff"))
         os.makedirs("./comparison/{}/".format(destfldr), exist_ok=True)
 
-        loom.thread(name="{} | montage".format(bundledHash), target=lambda: runMagickCommand(destfldr, "montage -label %i -mode concatenate", None, "compare_montage", sortedFilenames, bundledHash))
+        magickSpool.enqueue(name="{} | montage".format(bundledHash), target=lambda: runMagickCommand(destfldr, "montage -mode concatenate", None, "compare_montage", sortedFilenames, bundledHash))
+        # montage -label %i 
         if not sizediff:
             # TODO: Detect color!
-            loom.thread(target=lambda: runMagickCommand(destfldr, "compare -fuzz 10%% -compose src -highlight-color Black -lowlight-color White", None, "compare", sortedFilenames, bundledHash))
+            magickSpool.enqueue(target=lambda: runMagickCommand(destfldr, "compare -fuzz 10%% -compose src -highlight-color Black -lowlight-color White", None, "compare", sortedFilenames, bundledHash))
         with open("./comparison/{}/{}_pullTrigger.sh".format(destfldr, bundledHash), "w", newline='\n') as triggerFile:
             triggerFile.write("#!/bin/bash")
             triggerFile.write("\nrm -v {}".format(" ".join('"{}"'.format(filename) for filename in sortedFilenames[1:])))
@@ -307,7 +345,7 @@ def magickCompareDuplicates(shelvefile):
         with open("./comparison/{}/XXX_ALLFILES_pullTrigger_.sh".format(destfldr), "w", newline='\n') as triggerFile:
             triggerFile.write("#!/bin/bash")
             triggerFile.write(
-"""\n
+                """\n
 for trigger in *_pullTrigger.sh; do
 \techo $trigger
 \tbash $trigger
@@ -315,6 +353,8 @@ for trigger in *_pullTrigger.sh; do
 done
 """)
             triggerFile.write("\nrm -v ./XXX_ALLFILES_pullTrigger.sh")
+
+    magickSpool.finish(use_pbar=True)
 
 
 def runMagickCommand(shelvefile, precmd, midcmd, fileact, sortedFilenames, bundledHash):
@@ -339,24 +379,24 @@ def renameFiles(shelvefile, mock=True, clobber=False):
         for oldFilePath in filepaths:
             i += 1
             (oldFileDir, oldFileName) = os.path.split(oldFilePath)
-            try:
-                newname = os.path.join(
-                    oldFileDir,
-                    "{hash}{suffix}.{ext}".format(
-                        hash=bundledHash,
-                        suffix=("_{:08X}".format(CRC32(oldFilePath)) if len(
-                            filepaths) is not 1 else ""),
-                        ext=oldFileName.split('.')[-1]
-                    )
+        # try:
+            newname = os.path.join(
+                oldFileDir,
+                "{hash}{suffix}.{ext}".format(
+                    hash=bundledHash,
+                    suffix=("_{:08X}".format(CRC32(oldFilePath)) if len(
+                        filepaths) is not 1 else ""),
+                    ext=oldFileName.split('.')[-1]
                 )
-                if newname != oldFilePath:
-                    operations.append((oldFilePath, newname, bundledHash,))
-            except FileNotFoundError:
-                traceback.print_exc()
-                print(bundledHash)
-                print(filepaths)
-                print(oldFileName)
-                continue
+            )
+            if newname != oldFilePath:
+                operations.append((oldFilePath, newname, bundledHash,))
+        # except FileNotFoundError:
+        #     traceback.print_exc()
+        #     print(bundledHash)
+        #     print(filepaths)
+        #     print(oldFileName)
+        #     continue
 
     print("Processing {} file rename operations.".format(len(operations)))
     if len(operations) > 0:
@@ -364,7 +404,7 @@ def renameFiles(shelvefile, mock=True, clobber=False):
         # Create undo file
         ufilename = "undorename_{}_{}.sh".format(shelvefile, str(int(time())))
         print("Creating undo file at {}".format(ufilename))
-        with open(ufilename, "w+") as scriptfile:
+        with open(ufilename, "w+", newline='\n') as scriptfile:
             scriptfile.write("#!/bin/bash\n")
             for (old, new, bundledHash) in operations:
                 scriptfile.write('mv -v "{new}" "{old}" # 8^y\n'.format(
@@ -408,28 +448,61 @@ def parse_args():
     DEFAULT_HASH_SIZE = 12
     ap = argparse.ArgumentParser()
 
-    ap.add_argument("-s", "--shelve",
-                    required=True, help="Databse name")
-    ap.add_argument("-r", "--rename",
-                    help="Rename files to their perceptual hash, ordering them by similarity.", action="store_true")
-    ap.add_argument("-m", "--mock",
-                    help="Don't actually delete or rename files, just print a log of which ones would be deleted.", action="store_true")
-    ap.add_argument("-i", "--interactive",
-                    help="Prompt for user selection in choosing the file to keep instead of relying on the sort algorithm.", action="store_true")
-    ap.add_argument("-f", "--files", nargs='+',
-                    help="File globs that select which files to check. Globstar supported.")
-    ap.add_argument("-d", "--delete",
-                    help="Delete duplicate files by moving them to a temporary directory.", action="store_true")
-    ap.add_argument("-c", "--compare",
-                    help="Generate imagemagick commands to compare \"duplicates\".", action="store_true")
-    ap.add_argument("--recheck",
-                    help="Re-fingerprint all files, even if they might not have changed.", action="store_true")
-    ap.add_argument("--noscan",
-                    help="Don't search the paths in --files at all, just read a previously generated database.", action="store_true")
-    ap.add_argument("--hashsize",
-                    type=int, default=DEFAULT_HASH_SIZE, help="How similar the images need to be to match. Default {}. Minimum 2. (2x2 image)".format(DEFAULT_HASH_SIZE))
-    ap.add_argument("--clobber",
-                    help="Allow overwriting files during rename.", action="store_true")
+    ap.add_argument(
+        "-f", "--files", nargs='+', required=True, 
+        help="File globs that select which files to check. Globstar supported.")
+    ap.add_argument(
+        "-s", "--shelve",
+        required=True, help="Database name")
+    ap.add_argument(
+        "--noscan", action="store_true",
+        help="Don't search the paths in --files at all, just read a previously generated database.")
+    ap.add_argument(
+        "--hashsize",
+        type=int, default=DEFAULT_HASH_SIZE, help="How similar the images need to be to match. Default {}. Minimum 2. (2x2 image)".format(DEFAULT_HASH_SIZE))
+    
+    ap.add_argument(
+        "--recheck", action="store_true",
+        help="Re-fingerprint all files, even if they might not have changed.")
+    
+    ap.add_argument(
+        "-m", "--mock", action="store_true",
+        help="Don't actually delete or rename files, just print a log of which ones would be deleted.")
+    ap.add_argument(
+        "-i", "--interactive", action="store_true",
+        help="Prompt for user selection in choosing the file to keep instead of relying on the sort algorithm.")
+    ap.add_argument(
+        "-a", "--avoid", nargs='+', default=[], 
+        help="Substrings in the path to penalize during file sorting.")
+    ap.add_argument(
+        "--clobber",
+        help="Allow overwriting files during rename.", action="store_true")
+
+    ap.add_argument(
+        "-r", "--rename", action="store_true",
+        help="Rename files to their perceptual hash, ordering them by similarity.")
+    ap.add_argument(
+        "-d", "--delete", action="store_true",
+        help="Delete duplicate files by moving them to a temporary directory.")
+    ap.add_argument(
+        "-c", "--compare", action="store_true", 
+        help="Generate imagemagick commands to compare \"duplicates\".")
+
+    ap.add_argument(
+        "--debug_hash", action="store_true",
+        help="Print debugging information for hashes. Default: {}".format(HASHDEBUG))
+    ap.add_argument(
+        "--debug_sort", action="store_true",
+        help="Print debugging information for sorting. Default: {}".format(SORTDEBUG))
+    ap.add_argument(
+        "--debug_exists", action="store_true",
+        help="Print debugging information for file verification. Default: {}".format(DEBUG_FILE_EXISTS))
+    ap.add_argument(
+        "--verbose", action="store_true",
+        help="Print additional information. By default, 'quiet' is: {}".format(GLOBAL_QUIET_DEFAULT))
+    ap.add_argument(
+        "--noprogress", action="store_true",
+        help="Disallow progress bars. Default progressbar state: {}".format(PROGRESSBAR_ALLOWED))
     # ap.add_argument("--nocheck", help="Don't search the database for duplicates, just fingerprint the files in --dataset.",
     #                 action="store_true")
     return ap.parse_args()
@@ -437,6 +510,17 @@ def parse_args():
 
 def main():
     args = parse_args()
+
+    global HASHDEBUG, SORTDEBUG, GLOBAL_QUIET_DEFAULT
+    global DEBUG_FILE_EXISTS, PROGRESSBAR_ALLOWED
+    global BAD_WORDS
+    HASHDEBUG = args.debug_hash
+    SORTDEBUG = args.debug_sort
+    DEBUG_FILE_EXISTS = args.debug_exists
+    GLOBAL_QUIET_DEFAULT = not args.verbose
+    PROGRESSBAR_ALLOWED = not args.noprogress
+    BAD_WORDS = args.avoid
+
     shelvefile = "{0}.s{1}".format(args.shelve, args.hashsize)
 
     # Scan directories for files and populate database
@@ -444,7 +528,7 @@ def main():
         print("Crawling for files... (Use --noscan to skip this step)")
         imagePaths = sum([glob.glob(a, recursive=True) for a in args.files], [])
         # File handling and fallbacks
-        
+
         def scan():
             scanDirs(shelvefile, imagePaths,
                      recheck=args.recheck,
