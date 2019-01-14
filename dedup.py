@@ -1,7 +1,6 @@
 import loom             # Simple threading wrapper
 import imagehash        # Perceptual image hashing
 import argparse         # Argument parsing
-import shelve           # Persistant data storage
 import glob             # File globbing
 import progressbar      # Progress bars
 import os.path          # isfile() method
@@ -14,6 +13,10 @@ from PIL import Image   # Image IO libraries
 from binascii import crc32
 from send2trash import send2trash
 from os import sep
+
+
+# import shelve           # Persistant data storage
+import jfileutil as ju
 
 # Todo: Replace some sep formatting with os.path.join
 
@@ -29,6 +32,7 @@ DEBUG_FILE_EXISTS = False
 PROGRESSBAR_ALLOWED = True
 
 BAD_WORDS = []
+fsizecache = {}
 
 
 def CRC32(filename):
@@ -36,8 +40,6 @@ def CRC32(filename):
     buf = (crc32(buf) & 0xFFFFFFFF)
     return buf
 #     return "%08X" % buf
-
-fsizecache = {}
 
 
 def imageSize(filename):
@@ -93,7 +95,9 @@ def sortDuplicatePaths(filenames):
 def prune(shelvefile, verbose=False, show_pbar=True):
     print("Removing dead hashes")
     empties = []
-    with shelve.open("databases/" + shelvefile, writeback=False) as db:
+    
+    with ju.Handler(shelvefile, basepath="databases", allow_writeback=True) as db:
+    # with shelve.open(, writeback=False) as db:
         for key in db.keys():
             if db.get(key) == []:
                 empties.append(key)
@@ -110,6 +114,8 @@ def prune(shelvefile, verbose=False, show_pbar=True):
         if pbar:
             pbar.finish
 
+        ju.save(db, "databases/" + shelvefile)
+
 
 def scanDirs(shelvefile, imagePaths, recheck=False, hash_size=16):
     # Resolve glob to image paths
@@ -118,7 +124,7 @@ def scanDirs(shelvefile, imagePaths, recheck=False, hash_size=16):
     # that probably haven't changed.
     # If we're rechecking, we don't need to build this list at all!
     if not recheck:
-        with shelve.open("databases/" + shelvefile, writeback=False) as db:
+        with ju.Handler(shelvefile, basepath="databases", allow_writeback=False) as db:
             knownPaths = set([item for sublist in db.values()
                               for item in sublist])
 
@@ -128,7 +134,7 @@ def scanDirs(shelvefile, imagePaths, recheck=False, hash_size=16):
     # SCAN: Scan filesystem for images and hash them.
 
     print("Fingerprinting images with hash size {}".format(hash_size))
-    with shelve.open("databases/" + shelvefile, writeback=True) as db:
+    with ju.Handler(shelvefile, basepath="databases", allow_writeback=True) as db:
         # Show a pretty progress bar
         for i in progressbar.progressbar(range(len(imagePaths))):
             imagePath = imagePaths[i]
@@ -227,7 +233,7 @@ def getDuplicatesToDelete(shelvefile, interactive=False):
 def generateDuplicateFilelists(shelvefile, bundleHash=False, threshhold=1, quiet=GLOBAL_QUIET_DEFAULT):
     """Generate lists of files which all have the same hash."""
     print("Querying database for duplicate pictures.")
-    with shelve.open("databases/" + shelvefile, writeback=False) as db:
+    with ju.Handler(shelvefile, basepath="databases", allow_writeback=False) as db:
         tempdb = {key: db[key] for key in db.keys()}  # Shallow copy of the shelf
 
     # Database for deleting records from the shelf later
@@ -285,7 +291,7 @@ def generateDuplicateFilelists(shelvefile, bundleHash=False, threshhold=1, quiet
     if len(freshening.keys()) > 0:
         print("Adjusting {} updated records in database".format(
             len(freshening.keys())))
-        with shelve.open("databases/" + shelvefile, writeback=True) as db:
+        with ju.Handler(shelvefile, basepath="databases", allow_writeback=True) as db:
             for key in freshening.keys():
                 db[key] = freshening[key]
         freshening.clear()
@@ -433,7 +439,7 @@ def renameFiles(shelvefile, mock=True, clobber=False):
 
         # Write new filename to database
         print("Adding new files to database")
-        with shelve.open("databases/" + shelvefile, writeback=True) as db:
+        with ju.Handler(shelvefile, basepath="databases", allow_writeback=True) as db:
             for (old, new, bundledHash) in successfulOperations:
                 dbentry = db.get(bundledHash, [])
                 dbentry.remove(old)
