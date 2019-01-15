@@ -13,7 +13,7 @@ from PIL import Image   # Image IO libraries
 from binascii import crc32
 from send2trash import send2trash
 from os import sep
-
+import hashlib
 
 # import shelve           # Persistant data storage
 import jfileutil as ju
@@ -33,6 +33,15 @@ PROGRESSBAR_ALLOWED = True
 
 BAD_WORDS = []
 fsizecache = {}
+ 
+hasher = hashlib.md5()
+
+
+def md5(path):
+    with open(path, 'rb') as afile:
+        buf = afile.read()
+        hasher.update(buf)
+    return hasher.hexdigest()
 
 
 def CRC32(filename):
@@ -45,14 +54,15 @@ def CRC32(filename):
 def imageSize(filename):
     # Get a sortable integer representing the number of pixels in an image.
     # assert os.path.isfile(filename), filename
-    hit = fsizecache.get(filename)
+    h4sh = md5(filename)
+    hit = fsizecache.get(h4sh)
     if hit:
         return hit
 
     try:
         w, h = Image.open(filename).size
         size = w * h
-        fsizecache[filename] = size
+        fsizecache[h4sh] = size
         return size
     except FileNotFoundError:
         print("WARNING! File not found: ", filename)
@@ -68,6 +78,9 @@ def sortDuplicatePaths(filenames):
     Takes a list of files known to be duplicates
     and sorts them in order of "desirability"
     """
+
+    if len(filenames) <= 1:
+        return filenames
 
     # Sorting key
     def sort(x):
@@ -124,7 +137,7 @@ def scanDirs(shelvefile, imagePaths, recheck=False, hash_size=16):
     # that probably haven't changed.
     # If we're rechecking, we don't need to build this list at all!
     if not recheck:
-        with ju.Handler(shelvefile, basepath="databases", allow_writeback=False) as db:
+        with ju.Handler(shelvefile, default=dict(), basepath="databases", allow_writeback=False) as db:
             knownPaths = set([item for sublist in db.values()
                               for item in sublist])
 
@@ -134,7 +147,7 @@ def scanDirs(shelvefile, imagePaths, recheck=False, hash_size=16):
     # SCAN: Scan filesystem for images and hash them.
 
     print("Fingerprinting images with hash size {}".format(hash_size))
-    with ju.Handler(shelvefile, basepath="databases", allow_writeback=True) as db:
+    with ju.Handler(shelvefile, default=dict(), basepath="databases", allow_writeback=True) as db:
         # Show a pretty progress bar
         for i in progressbar.progressbar(range(len(imagePaths))):
             imagePath = imagePaths[i]
@@ -230,73 +243,72 @@ def getDuplicatesToDelete(shelvefile, interactive=False):
     return filestodelete
 
 
-def generateDuplicateFilelists(shelvefile, bundleHash=False, threshhold=1, quiet=GLOBAL_QUIET_DEFAULT):
+def generateDuplicateFilelists(shelvefile, bundleHash=False, threshhold=1, quiet=GLOBAL_QUIET_DEFAULT, sort=True):
     """Generate lists of files which all have the same hash."""
     print("Querying database for duplicate pictures.")
     with ju.Handler(shelvefile, basepath="databases", allow_writeback=False) as db:
-        tempdb = {key: db[key] for key in db.keys()}  # Shallow copy of the shelf
 
-    # Database for deleting records from the shelf later
-    freshening = {}
+        global fsizecache
+        fsizecache = ju.load("sizes", default=dict())
 
-    if PROGRESSBAR_ALLOWED:
-        pbar = progressbar.ProgressBar(max_value=len(tempdb.keys()), redirect_stdout=True)
-        i = 0
-
-    for h in tempdb.keys():
+        pbar = None
         if PROGRESSBAR_ALLOWED:
-            i += 1
-            pbar.update(i)
+            pbar = progressbar.ProgressBar(max_value=len(db.keys()), redirect_stdout=True)
+            i = 0
 
-        # For each hash `h` and the list of filenames with that hash `filenames`:
-        filenames = tempdb[h]
-        # filenames = [filepath for filepath in tempdb[h] if os.path.isfile(filepath)]
+        for h in db.keys():
+            if pbar:
+                i += 1
+                pbar.update(i)
 
-        # Remove duplicate filenames
-        if len(set(filenames)) < len(filenames):
-            print("Duplicate file names detected in hash {}, cleaning.".format(h))
-            filenames = freshening[h] = list(set(filenames))
+            # For each hash `h` and the list of filenames with that hash `filenames`:
+            filenames = db[h]
+            # filenames = [filepath for filepath in db[h] if os.path.isfile(filepath)]
 
-        # Verify that all these files exist.
-        missing_files = []
-        for filepath in filenames:
-            if not os.path.isfile(filepath):
-                missing_files.append(filepath)
-            else:
-                if DEBUG_FILE_EXISTS:
-                    print("GOOD {}".format(filepath))
-
-        for filepath in missing_files:
-            filenames.remove(filepath)
-            freshening[h] = filenames
-            if not quiet:
-                print("File {} has vanished. Now aware of {} unique hashes with missing records. ".format(
-                    filepath, len(freshening.keys())))
-
-        if DEBUG_FILE_EXISTS:
+            # Remove duplicate filenames
+            if len(set(filenames)) < len(filenames):
+                print("Duplicate file names detected in hash {}, cleaning.".format(h))
+                db[h] = filenames = list(set(filenames))
+                # = freshening[h]
+            # Verify that all these files exist.
+            missing_files = []
             for filepath in filenames:
-                assert os.path.isfile(filepath), filepath
+                if not os.path.isfile(filepath):
+                    missing_files.append(filepath)
+                else:
+                    if DEBUG_FILE_EXISTS:
+                        print("GOOD {}".format(filepath))
 
-        # If there is STILL more than one file with the hash:
-        if len(filenames) >= threshhold:
-            filenames = sortDuplicatePaths(filenames)
-            if not quiet:
-                print("Found {0} duplicate images for hash [{1}]".format(
-                    len(filenames), h))
-            if bundleHash:
-                yield (filenames, h)
-            else:
-                yield filenames
+            for filepath in missing_files:
+                filenames.remove(filepath)
 
-    if len(freshening.keys()) > 0:
-        print("Adjusting {} updated records in database".format(
-            len(freshening.keys())))
-        with ju.Handler(shelvefile, basepath="databases", allow_writeback=True) as db:
-            for key in freshening.keys():
-                db[key] = freshening[key]
-        freshening.clear()
+            if DEBUG_FILE_EXISTS:
+                for filepath in filenames:
+                    assert os.path.isfile(filepath), filepath
 
-    if PROGRESSBAR_ALLOWED:
+            # If there is STILL more than one file with the hash:
+            if len(filenames) >= threshhold:
+                if sort:
+                    filenames = sortDuplicatePaths(filenames)
+                if not quiet:
+                    print("Found {0} duplicate images for hash [{1}]".format(
+                        len(filenames), h))
+                if bundleHash:
+                    yield (filenames, h)
+                else:
+                    yield filenames
+    # close
+
+    # if len(freshening.keys()) > 0:
+    #     print("Adjusting {} updated records in database".format(
+    #         len(freshening.keys())))
+    #     with ju.Handler(shelvefile, basepath="databases", allow_writeback=True) as db:
+    #         for key in freshening.keys():
+    #             db[key] = freshening[key]
+    #     freshening.clear()
+
+    ju.save(fsizecache, "sizes")
+    if pbar:
         pbar.finish()
 
 
@@ -309,14 +321,14 @@ def trash(file):
 def deleteFiles(filestodelete):
     print("Deleting files")
     if len(filestodelete) > 0:
-        delSpool = loom.Spool(20, start=True)
+        delSpool = loom.Spool(quota=20, delay=1, start=True)
         for file in filestodelete:
             delSpool.enqueue(
                 name="trash {}".format(file),
                 target=trash, args=(file,)
             )
         # Cleanup
-        delSpool.finish(verbose=True)
+        delSpool.finish()
         print("Finished.")
 
 
@@ -326,21 +338,25 @@ def magickCompareDuplicates(shelvefile):
         os.makedirs("./comparison/{}/".format(destfldr), exist_ok=True)
 
     # Otherwise, do the thing.
-    magickSpool = loom.Spool(4, start=True)
+    magickSpool = loom.Spool(quota=4, delay=1, start=True)
 
     for (sortedFilenames, bundledHash) in generateDuplicateFilelists(shelvefile, bundleHash=True, threshhold=2):
         # loom.threadWait(9, 1, quiet=True)
 
         sizediff = (len(set([imageSize(path) for path in sortedFilenames])) > 1)
 
-        destfldr = (shelvefile if not sizediff else (shelvefile + "_sizediff"))
+        if sizediff:
+            destfldr = shelvefile + "_sizediff"
+        else:
+            destfldr = shelvefile
+
         os.makedirs("./comparison/{}/".format(destfldr), exist_ok=True)
 
-        magickSpool.enqueue(name="{} | montage".format(bundledHash), target=lambda: runMagickCommand(destfldr, "montage -mode concatenate", None, "compare_montage", sortedFilenames, bundledHash))
+        magickSpool.enqueue(name="{} | montage".format(bundledHash), target=runMagickCommand, args=(destfldr, "montage -mode concatenate", None, "compare_montage", sortedFilenames, bundledHash,))
         # montage -label %i 
         if not sizediff:
             # TODO: Detect color!
-            magickSpool.enqueue(target=lambda: runMagickCommand(destfldr, "compare -fuzz 10%% -compose src -highlight-color Black -lowlight-color White", None, "compare", sortedFilenames, bundledHash))
+            magickSpool.enqueue(target=runMagickCommand, args=(destfldr, "compare -fuzz 10%% -compose src -highlight-color Black -lowlight-color White", None, "compare", sortedFilenames, bundledHash,))
         with open("./comparison/{}/{}_pullTrigger.sh".format(destfldr, bundledHash), "w", newline='\n') as triggerFile:
             triggerFile.write("#!/bin/bash")
             triggerFile.write("\nrm -v {}".format(" ".join('"{}"'.format(filename) for filename in sortedFilenames[1:])))
@@ -360,7 +376,7 @@ done
 """)
             triggerFile.write("\nrm -v ./XXX_ALLFILES_pullTrigger.sh")
 
-    magickSpool.finish(use_pbar=True)
+    magickSpool.finish()
 
 
 def runMagickCommand(shelvefile, precmd, midcmd, fileact, sortedFilenames, bundledHash):
@@ -379,7 +395,7 @@ def runMagickCommand(shelvefile, precmd, midcmd, fileact, sortedFilenames, bundl
 def renameFiles(shelvefile, mock=True, clobber=False):
     print("Renaming")
     operations = []
-    for (filepaths, bundledHash) in generateDuplicateFilelists(shelvefile, bundleHash=True, threshhold=1):
+    for (filepaths, bundledHash) in generateDuplicateFilelists(shelvefile, bundleHash=True, threshhold=1, sort=False):
         i = 0
         # for oldFileName in sortDuplicatePaths(filepaths):
         for oldFilePath in filepaths:
@@ -539,16 +555,17 @@ def main():
             scanDirs(shelvefile, imagePaths,
                      recheck=args.recheck,
                      hash_size=args.hashsize)
+        extensions = ["json", "dir", "bak", "dat"]
         try:
             scan()
         except Exception as e:
             print("Database corrupted. Restoring.")
-            for databaseFile in ["databases/{}.{}".format(shelvefile, ext) for ext in ["dir", "bak", "dat"]]:
+            for databaseFile in ["databases/{}.{}".format(shelvefile, ext) for ext in extensions]:
                 try:
                     shutil.os.remove(databaseFile)
                 except FileNotFoundError as e:
                     pass
-            for ext in ["dir", "bak", "dat"]:
+            for ext in extensions:
                 try:
                     shutil.copy2("databases/BAK.{}.{}".format(shelvefile, ext),
                                  "databases/{}.{}".format(shelvefile, ext))
@@ -556,7 +573,7 @@ def main():
                     pass
             scan()
         print("Backing up database.")
-        for ext in ["dir", "bak", "dat"]:
+        for ext in extensions:
             try:
                 shutil.copy2("databases/{}.{}".format(shelvefile, ext),
                              "databases/BAK.{}.{}".format(shelvefile, ext))
