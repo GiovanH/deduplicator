@@ -227,6 +227,9 @@ def scanDirs(shelvefile, imagePaths, recheck=False, hash_size=16):
             except Exception:
                 # traceback.print_exc(limit=1)
                 print("...but it failed!")
+                with open("forcedelete.sh", "a", newline='\n') as shellfile:
+                    shellfile.write("rm -vf '{}' \n".format(imagePath))
+
                 pass  # Not a dealbreaker.
             return
 
@@ -384,11 +387,14 @@ def trash(file, verbose=True):
             # Well, the file's gone, anyway.
             print("TRASH ODDITY: {}".format(file))
             return
-
         # The file is still here.
+
         if isinstance(e, FileNotFoundError):
             print("TRASH FAILED: {} (Not found)".format(file))
-        raise
+
+        os.unlink(file)
+        if not os.path.isfile(file):
+            raise
 
 
 def deleteFiles(filestodelete):
@@ -477,7 +483,7 @@ def magickCompareDuplicates(shelvefile):
                 triggerfile = "{}_pullTrigger.sh".format(imgfil_hash)
                 shfil = ".\\comparison\\{d}\\{t}".format(d=destfldr, t=triggerfile)
                 if (destfldr == shelvefile and len(hashs_images) != 2) or (destfldr == shelvefile + "_sizediff" and len(hashs_images) != 1):
-                    print("Image", imgfil, "missing neighbors.", shfil)
+                    print("Image", imgfil, "missing neighbors.")
                 elif not os.path.isfile(shfil):
                     print("Image", imgfil, "missing shell file: ", shfil)
                 else:
