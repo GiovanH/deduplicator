@@ -6,7 +6,6 @@ import progressbar      # Progress bars
 import os.path          # isfile() method
 import traceback
 import subprocess       # Magick runner
-import shutil           # Moving, renaming.
 
 from time import time   # Time IDs
 from PIL import Image   # Image IO libraries
@@ -14,9 +13,11 @@ from binascii import crc32
 from send2trash import send2trash
 from os import sep
 import hashlib
+from json.decoder import JSONDecodeError
 
 # import shelve           # Persistant data storage
 import jfileutil as ju
+from snip import chunk, moveFileToFile
 
 # Todo: Replace some sep formatting with os.path.join
 
@@ -33,8 +34,12 @@ PROGRESSBAR_ALLOWED = True
 
 BAD_WORDS = []
 
-fsizecache = ju.load("sizes", default=dict())
- 
+try:
+    fsizecache = ju.load("sizes", default=dict())
+except JSONDecodeError:
+    print("Bad fscache file, resetting. ")
+    fsizecache = dict() 
+
 hasher = hashlib.md5()
 
 VALID_IMAGE_EXTENSIONS = ["gif", "jpg", "png", "jpeg", "bmp"]
@@ -150,7 +155,7 @@ def prune(shelvefile, verbose=False, show_pbar=True):
     print("Removing dead hashes")
     empties = []
     
-    with ju.RotatingHandler(shelvefile, basepath="databases", readonly=False) as db:
+    with ju.RotatingHandler(shelvefile, basepath="databases", readonly=False, default=dict()) as db:
         for key in db.keys():
             if len(db.get(key)) == 0:
                 empties.append(key)
@@ -167,88 +172,93 @@ def prune(shelvefile, verbose=False, show_pbar=True):
         if pbar:
             pbar.finish
 
-        ju.save(db, "databases/" + shelvefile)
+        ju.save(db, shelvefile, basepath="databases")
 
 
-def scanDirs(shelvefile, imagePaths, recheck=False, hash_size=16):
+def scanDirs(shelvefile, image_paths, recheck=False, hash_size=16):
     # Resolve glob to image paths
 
     # Make a list of image paths we already know about. We use this to skip images
     # that probably haven't changed.
     # If we're rechecking, we don't need to build this list at all!
     if not recheck:
-        knownPaths = set(
-            [
-                item for sublist in
-                ju.load(shelvefile, basepath="databases").values()
-                for item in sublist
-            ]
-        )
+        print(shelvefile)
+        with ju.RotatingHandler(shelvefile, default=dict(), basepath="databases", readonly=True) as db:
+            known_paths = set(
+                [
+                    item for sublist in
+                    db.values()
+                    for item in sublist
+                ]
+            )
 
     prune(shelvefile)
-    # not yet implemented
 
     # SCAN: Scan filesystem for images and hash them.
 
-    def fingerprintImage(db, imagePath):
-        """Updates database db with phash data of image at imagePath."""
-
-        # If we don't know the image, or if we're doing a full recheck
-        if imagePath in knownPaths and not recheck:
-            # print("Fingerprint skip")
-            return
+    def fingerprintImage(db, image_path):
+        """Updates database db with phash data of image at image_path."""
 
         # load the image and compute the difference hash
         try:
-            if isVideo(imagePath):
-                proc_hash = md5(imagePath)
-            elif not isImage(imagePath):
-                print("Unrecognized file format:", imagePath)
+            if isVideo(image_path):
+                proc_hash = md5(image_path)
+            elif not isImage(image_path):
+                print("Unrecognized file format:", image_path)
                 return
             else:            
-                image = Image.open(imagePath)
+                image = Image.open(image_path)
                 proc_hash = str(imagehash.dhash(image, hash_size=hash_size))
                 # Compress:
                 # proc_hash = proc_hash.decode("hex").encode("base64")
 
         except FileNotFoundError:
-            print("WARNING! File not found: ", imagePath)
+            print("WARNING! File not found: ", image_path)
             # traceback.print_exc()
             return
         except ValueError:
-            print("WARNING! Error parsing image: ", imagePath)
+            print("WARNING! Error parsing image: ", image_path)
             traceback.print_exc()
             return
         except OSError:
-            print("ERROR: File", imagePath, "is corrupt or invalid.")
+            print("ERROR: File", image_path, "is corrupt or invalid.")
             print("Trashing file.")
             try:
-                trash(imagePath)
+                trash(image_path)
             except Exception:
-                # traceback.print_exc(limit=1)
                 print("...but it failed!")
+                traceback.print_exc(limit=1)
                 with open("forcedelete.sh", "a", newline='\n') as shellfile:
-                    shellfile.write("rm -vf '{}' \n".format(imagePath))
+                    shellfile.write("rm -vf '{}' \n".format(image_path))
 
                 pass  # Not a dealbreaker.
             return
 
-        filename = imagePath  # [imagePath.rfind("/") + 1:]
+        filename = image_path  # [image_path.rfind("/") + 1:]
 
         # Add the path to the database if it's not already present.
         # Each Key (a hash) has a List value.
         # The list is a list of file paths with that hash.
         if filename not in db.get(proc_hash, []):
             if HASHDEBUG:
-                print("New file:", imagePath, proc_hash)
+                print("New file:", image_path, proc_hash)
             db[proc_hash] = db.get(proc_hash, []) + [filename]
 
-    print("Fingerprinting images with hash size {}".format(hash_size))
-    with ju.RotatingHandler(shelvefile, default=dict(), basepath="databases", readonly=False) as db:
-        with loom.Spool(6, name="Fingerprint") as fpSpool:
-            # Show a pretty progress bar
-            for imagePath in imagePaths:
-                fpSpool.enqueue(target=fingerprintImage, args=(db, imagePath,))
+    open("forcedelete.sh", "w").close()
+
+    images_to_fingerprint = [image_path for image_path in image_paths if (image_path not in known_paths) or recheck]
+    num_images_to_fingerprint = len(images_to_fingerprint)
+    chunk_size = 4000
+
+    from math import ceil
+    total_chunks = ceil(num_images_to_fingerprint / chunk_size)
+
+    print("Fingerprinting {} images with hash size {}".format(num_images_to_fingerprint, hash_size))
+    for (i, image_path_chunk) in enumerate(chunk(images_to_fingerprint, chunk_size)):
+        with ju.RotatingHandler(shelvefile, default=dict(), basepath="databases", readonly=False) as db:
+            with loom.Spool(8, name="Fingerprint {}/{}".format(i + 1, total_chunks)) as fpSpool:
+                for image_path in image_path_chunk:
+                    fpSpool.enqueue(target=fingerprintImage, args=(db, image_path,))
 
 
 def getDuplicatesToDelete(shelvefile, interactive=False):
@@ -266,8 +276,8 @@ def getDuplicatesToDelete(shelvefile, interactive=False):
             for i in range(0, len(filenames)):
                 print("{0}. {1}".format(i, filenames[i]))
             # Loop over the menu until the user selects a valid option
-            goodAns = False
-            while not goodAns:
+            good_ans = False
+            while not good_ans:
                 # Show the choices
                 ans = input(
                     "\nEnter the number of the file to KEEP: (0) ('s' to skip) ")
@@ -275,7 +285,7 @@ def getDuplicatesToDelete(shelvefile, interactive=False):
                     if ans.upper() == "S":
                         # Skip this image (don't delete anything)
                         # and also, for good measure, output the delete file.
-                        goodAns = True
+                        good_ans = True
                         goingtokeep = "All."
                         goingtodelete = []
                         continue
@@ -286,7 +296,7 @@ def getDuplicatesToDelete(shelvefile, interactive=False):
                     goingtokeep = filenames[index]
                     goingtodelete = filenames[:index] + \
                         filenames[(index + 1):]
-                    goodAns = True
+                    good_ans = True
                 except ValueError:
                     print("Not a valid number. ")  # Have another go.
         else:  # Not interactive.
@@ -336,19 +346,18 @@ def generateDuplicateFilelists(shelvefile, bundleHash=False, threshhold=1, quiet
                 # = freshening[h]
             # Verify that all these files exist.
             missing_files = []
-            for filepath in filenames:
-                if not os.path.isfile(filepath):
+            for filepath in (f for f in filenames if not os.path.isfile(f)):
                     missing_files.append(filepath)
-                else:
-                    if DEBUG_FILE_EXISTS:
-                        print("GOOD {}".format(filepath))
+                # else:
+                #     if DEBUG_FILE_EXISTS:
+                #         print("GOOD {}".format(filepath))
 
             for filepath in missing_files:
                 filenames.remove(filepath)
 
-            if DEBUG_FILE_EXISTS:
-                for filepath in filenames:
-                    assert os.path.isfile(filepath), filepath
+            # if DEBUG_FILE_EXISTS:
+            #     for filepath in filenames:
+            #         assert os.path.isfile(filepath), filepath
 
             # If there is STILL more than one file with the hash:
             if sort and len(filenames) >= threshhold:
@@ -400,31 +409,32 @@ def trash(file, verbose=True):
 def deleteFiles(filestodelete):
     print("Deleting files")
     if len(filestodelete) > 0:
-        delSpool = loom.Spool(20)
+        delete_spool = loom.Spool(20)
         for file in filestodelete:
-            delSpool.enqueue(
+            delete_spool.enqueue(
                 name="trash {}".format(file),
                 target=trash, args=(file,)
             )
         # Cleanup
-        delSpool.finish()
+        delete_spool.finish()
         print("Finished.")
 
 
 def magickCompareDuplicates(shelvefile):
 
-    def writeTriggerFile(destfldr, sortedFilenames, bundledHash):
-        with open("./comparison/{}/{}_pullTrigger.sh".format(destfldr, bundledHash), "w", newline='\n') as triggerFile:
+    def writeTriggerFile(destfldr, sortedFilenames, bundled_hash):
+        with open("./comparison/{}/{}_pullTrigger.sh".format(destfldr, bundled_hash), "w", newline='\n') as triggerFile:
             triggerFile.write("#!/bin/bash")
+            triggerFile.write("\n# rm -v {}".format(sortedFilenames[0]))
             triggerFile.write("\nrm -v {}".format(" ".join('"{}"'.format(filename) for filename in sortedFilenames[1:])))
-            triggerFile.write("\nrm -v ./{}*.jpg".format(bundledHash))
-            triggerFile.write("\nrm -v ./{}_pullTrigger.sh".format(bundledHash))
+            triggerFile.write("\nrm -v ./{}*.jpg".format(bundled_hash))
+            triggerFile.write("\nrm -v ./{}_pullTrigger.sh".format(bundled_hash))
 
     print("Running comparisons.")
     for destfldr in [shelvefile + "_sizediff", shelvefile]:
         os.makedirs("./comparison/{}/".format(destfldr), exist_ok=True)
 
-    def processMagickAction(sortedFilenames, bundledHash):
+    def processMagickAction(sortedFilenames, bundled_hash):
         if not all(isImage(sfilepath) for sfilepath in sortedFilenames):
             # print("NOT attempting magick on files")
             # print(sortedFilenames)
@@ -439,7 +449,7 @@ def magickCompareDuplicates(shelvefile):
 
         os.makedirs("./comparison/{}/".format(destfldr), exist_ok=True)
 
-        compare_outfile = "./comparison/{}/{}_compare_montage.jpg".format(destfldr, bundledHash)
+        compare_outfile = "./comparison/{}/{}_compare_montage.jpg".format(destfldr, bundled_hash)
         if os.path.exists(compare_outfile):
             return
 
@@ -453,23 +463,23 @@ def magickCompareDuplicates(shelvefile):
             
         if sizediff:
             # try:
-            runMagickCommand(destfldr, "montage -mode concatenate", None, "compare_montage", sortedFilenames, bundledHash)
-            writeTriggerFile(destfldr, sortedFilenames, bundledHash)
+            runMagickCommand(destfldr, "montage -mode concatenate", None, "compare_montage", sortedFilenames, bundled_hash)
+            writeTriggerFile(destfldr, sortedFilenames, bundled_hash)
             # except subprocess.CalledProcessError as e:
             #     pass
             # montage -label %i 
         else: 
             # TODO: Detect color!
             # try:
-            runMagickCommand(destfldr, "montage -mode concatenate", None, "compare_montage", sortedFilenames, bundledHash)
-            runMagickCommand(destfldr, "compare -fuzz 10%% -compose src -highlight-color Black -lowlight-color White", None, "compare", sortedFilenames, bundledHash)
-            writeTriggerFile(destfldr, sortedFilenames, bundledHash)
+            runMagickCommand(destfldr, "montage -mode concatenate", None, "compare_montage", sortedFilenames, bundled_hash)
+            runMagickCommand(destfldr, "compare -fuzz 10%% -compose src -highlight-color Black -lowlight-color White", None, "compare", sortedFilenames, bundled_hash)
+            writeTriggerFile(destfldr, sortedFilenames, bundled_hash)
             # except subprocess.CalledProcessError as e:
             #     pass
 
     with loom.Spool(1, name="Magick") as magickSpool:
-        for (sortedFilenames, bundledHash) in generateDuplicateFilelists(shelvefile, bundleHash=True, threshhold=2):
-            magickSpool.enqueue(target=processMagickAction, args=(sortedFilenames, bundledHash,))
+        for (sortedFilenames, bundled_hash) in generateDuplicateFilelists(shelvefile, bundleHash=True, threshhold=2):
+            magickSpool.enqueue(target=processMagickAction, args=(sortedFilenames, bundled_hash,))
         magickSpool.setQuota(5)  # Widen
 
     for destfldr in [shelvefile + "_sizediff", shelvefile]:
@@ -500,6 +510,7 @@ def magickCompareDuplicates(shelvefile):
                     trashSpool.enqueue(target=trash, args=(sh,))
 
         # Write allfiles pulltrigger
+        print("Writing XXX_ALLFILES")
         with open("./comparison/{}/XXX_ALLFILES_pullTrigger_.sh".format(destfldr), "w", newline='\n') as triggerFile:
             triggerFile.write("#!/bin/bash")
             triggerFile.write(
@@ -513,8 +524,8 @@ done
             triggerFile.write("\nrm -v ./XXX_ALLFILES_pullTrigger.sh")
     
 
-def runMagickCommand(shelvefile, precmd, midcmd, fileact, sortedFilenames, bundledHash):
-    outfile = "./comparison/{}/{}_{}.jpg".format(shelvefile, bundledHash, fileact)
+def runMagickCommand(shelvefile, precmd, midcmd, fileact, sortedFilenames, bundled_hash):
+    outfile = "./comparison/{}/{}_{}.jpg".format(shelvefile, bundled_hash, fileact)
     command = ["magick"]
     command += precmd.split(" ")
     command += sortedFilenames
@@ -550,81 +561,70 @@ def renameFiles(shelvefile, mock=True, clobber=False):
     """
 
     # Track successful file operations
-    successfulOperations = []
+    successful_operations = []
 
     # Define our function to thread
-    def processRenameOperation(old, new, bundledHash, verboseSuccess=False, verboseError=True):
+    def processRenameOperation(old_path, new_name, bundled_hash, verboseSuccess=False, verboseError=True):
         """Appropriately renames files. 
         Designed to run in a thread. 
-        Successful operations accumulate in list successfulOperations
+        Successful operations accumulate in list successful_operations
         
         Args:
             old (str): Old file path
             new (str): New file path
-            bundledHash (str): Perceptual hash of image at file
+            bundled_hash (str): Perceptual hash of image at file
         """
-        assert os.path.isfile(old)
         if mock:
             if verboseError:
                 print("MOCK: {} -X-> {}".format(old, new))
             return
-        if os.path.isfile(new):
-            # Collision
-            if not clobber:
-                # Collide
-                if verboseError:
-                    print("FAILED: {} -X>< {} (file exists)".format(old, new))
-            else:
-                # Trash existing, then replace.
-                trash(new)
+
+        old_dir, old_name = os.path.split(old_path)
+        new_path = os.path.join(old_dir, new_name)
+
         try:
-            # Perform move
-            shutil.move(old, new)
-            print("{} ---> {}".format(old, new))
-            successfulOperations.append((old, new, bundledHash,))
-        except FileNotFoundError as e:
-            print("MOVE FAILED: {} -X-> {} (Not found)".format(old, new))
-            raise
+            moveFileToFile(old_path, new_path, clobber=False)
+        except FileExistsError as e:
+            # Implement our own clobber behavior
+            if clobber:
+                # Trash existing, then replace.
+                trash(new_path)
+                moveFileToFile(old_path, new_path, clobber=False)
+        successful_operations.append((old, new, bundled_hash,))
 
     print("Renaming")
     with loom.Spool(8, name="Renamer") as renamer:
-        for (filepaths, bundledHash) in generateDuplicateFilelists(shelvefile, bundleHash=True, threshhold=1, sort=False):
+        for (filepaths, bundled_hash) in generateDuplicateFilelists(shelvefile, bundleHash=True, threshhold=1, sort=False):
             i = 0
-            # for oldFileName in sortDuplicatePaths(filepaths):
-            for oldFilePath in filepaths:
+            # for old_file_name in sortDuplicatePaths(filepaths):
+            for old_file_path in filepaths:
                 i += 1
-                (oldFileDir, oldFileName) = os.path.split(oldFilePath)
+                (old_file_dir, old_file_name) = os.path.split(old_file_path)
             # try:
-                newFilePath = os.path.join(
-                    oldFileDir,
-                    "{hash}{suffix}.{ext}".format(
-                        hash=bundledHash,
-                        suffix=("_{}".format(CRC32(oldFilePath)) if len(
-                            filepaths) is not 1 else ""),
-                        ext=oldFileName.split('.')[-1]
-                    )
+                new_file_name = "{hash}{suffix}.{ext}".format(
+                    hash=bundled_hash,
+                    suffix=("_{}".format(CRC32(old_file_path)) if len(filepaths) is not 1 else ""),
+                    ext=old_file_name.split('.')[-1]
                 )
-                if newFilePath != oldFilePath:
-                    renamer.enqueue(target=processRenameOperation, args=(oldFilePath, newFilePath, bundledHash))
-
+                renamer.enqueue(target=processRenameOperation, args=(old_file_path, new_file_name, bundled_hash))
 
     # Create undo file
     ufilename = "undorename_{}_{}.sh".format(shelvefile, str(int(time())))
     print("Creating undo file at {}".format(ufilename))
     with open(ufilename, "w+", newline='\n') as scriptfile:
         scriptfile.write("#!/bin/bash\n")
-        for (old, new, bundledHash) in successfulOperations:
+        for (old, new, bundled_hash) in successful_operations:
             scriptfile.write('mv -v "{new}" "{old}" # 8^y\n'.format(
                 old=old, new=new))
 
     # Write new filenames to database
     print("Adding new files to database")
     with ju.RotatingHandler(shelvefile, basepath="databases", readonly=False) as db:
-        for (old, new, bundledHash) in successfulOperations:
-            dbentry = db.get(bundledHash, [])
+        for (old, new, bundled_hash) in successful_operations:
+            dbentry = db.get(bundled_hash, [])
             dbentry.remove(old)
             dbentry.append(new)
-            db[bundledHash] = dbentry
+            db[bundled_hash] = dbentry
 
 
 def parse_args():
@@ -715,10 +715,10 @@ def main():
     # Scan directories for files and populate database
     if not args.noscan:
         print("Crawling for files... (Use --noscan to skip this step)")
-        imagePaths = sum([glob.glob(a, recursive=True) for a in args.files], [])
+        image_paths = sum([glob.glob(a, recursive=True) for a in args.files], [])
         # File handling and fallbacks
 
-        scanDirs(shelvefile, imagePaths,
+        scanDirs(shelvefile, image_paths,
                  recheck=args.recheck,
                  hash_size=args.hashsize)
 
@@ -731,11 +731,11 @@ def main():
         magickCompareDuplicates(shelvefile)
 
     if args.delete:
-        filesToDelete = getDuplicatesToDelete(
+        files_to_delete = getDuplicatesToDelete(
             shelvefile,
             interactive=args.interactive)
         if not args.mock:
-            deleteFiles(filesToDelete)
+            deleteFiles(files_to_delete)
 
     ju.save(fsizecache, "sizes")
 
