@@ -207,7 +207,7 @@ def sortDuplicatePaths(filenames):
     return st
 
 
-def prune(shelvefile, verbose=False, show_pbar=True):
+def prune(shelvefile, verbose=False, show_pbar=True, purge=False, paths=[]):
     """Remove hashes without files.
     
     Args:
@@ -220,6 +220,8 @@ def prune(shelvefile, verbose=False, show_pbar=True):
     
     with ju.RotatingHandler(shelvefile, basepath="databases", readonly=False, default=dict()) as db:
         for key in db.keys():
+            if purge:
+                db[key] = [p for p in db.get(key) if (p in paths) and os.path.isfile(p)]
             if len(db.get(key)) == 0:
                 empties.append(key)
 
@@ -263,10 +265,11 @@ def scanDirs(shelvefile, image_paths, recheck=False, hash_size=16):
                 ]
             )
 
-    prune(shelvefile)
+    # Prune the shelve file
 
     # SCAN: Scan filesystem for images and hash them.
 
+    # Threading
     def fingerprintImage(db, image_path):
         """Updates database db with phash data of image at image_path.
         
@@ -534,7 +537,6 @@ def deleteFiles(filestodelete):
 
 
 def magickCompareDuplicates(shelvefile):
-
     """Use imagemagick to generate comparisons.
     
     Args:
@@ -805,6 +807,12 @@ def parse_args():
         "-f", "--files", nargs='+', required=True, 
         help="File globs that select which files to check. Globstar supported.")
     ap.add_argument(
+        "--files-exempt", nargs='+', required=False, 
+        help="File substrings to ignore")
+    ap.add_argument(
+        "--purge", action="store_true",
+        help="Delete records of files not currently seen, even if they're in the database.")
+    ap.add_argument(
         "-s", "--shelve",
         required=True, help="Database name")
     ap.add_argument(
@@ -882,8 +890,22 @@ def main():
     # Scan directories for files and populate database
     if not args.noscan:
         print("Crawling for files... (Use --noscan to skip this step)")
-        image_paths = sum([glob.glob(a, recursive=True) for a in args.files], [])
+        # print(args.files)
+        _image_paths = sum([glob.glob(a, recursive=True) for a in args.files], [])
+
+        # for k in _image_paths:
+        #     print(k, *((j, k.find(j) == -1,) for j in args.files_exempt))
+
+        image_paths = [
+            i for i in 
+            _image_paths
+            if all(i.find(j) == -1 for j in args.files_exempt)
+        ]
+        # print("\n".join(image_paths))
+
         # File handling and fallbacks
+
+        prune(shelvefile, purge=args.purge, paths=image_paths)
 
         scanDirs(shelvefile, image_paths,
                  recheck=args.recheck,
