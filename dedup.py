@@ -40,8 +40,6 @@ except JSONDecodeError:
     print("Bad fscache file, resetting. ")
     fsizecache = dict() 
 
-hasher = hashlib.md5()
-
 VALID_IMAGE_EXTENSIONS = ["gif", "jpg", "png", "jpeg", "bmp"]
 
 # Image.MAX_IMAGE_PIXELS = 148306125
@@ -49,13 +47,27 @@ Image.MAX_IMAGE_PIXELS = 160000000
 
 
 def md5(path):
+    """Gives the md5 hash of a file on disk.
+    Args:
+        path (str): Path to a file
+    
+    Returns:
+        str: MD5 hex digest
+    """
     with open(path, 'rb') as afile:
-        buf = afile.read()
-        hasher.update(buf)
-    return hasher.hexdigest()
+        h = hashlib.md5()
+        h.update(afile.read())
+        return h.hexdigest()
 
 
 def CRC32(filename):
+    """Gives the CRC hash of a file on disk.
+    Args:
+        path (str): Path to a file
+    
+    Returns:
+        str: CRC32 hex digest
+    """
     buf = open(filename, 'rb').read()
     buf = (crc32(buf) & 0xFFFFFFFF)
     return "{:08X}".format(buf)
