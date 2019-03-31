@@ -1,3 +1,16 @@
+"""Summary
+
+Attributes:
+    BAD_WORDS (list): List of substrings to avoid while sorting
+    DEBUG_FILE_EXISTS (bool): Description
+    GLOBAL_QUIET_DEFAULT (bool): Description
+    HASHDEBUG (bool): Description
+    IScachetotal (TYPE): Description
+    PROGRESSBAR_ALLOWED (bool): Description
+    SHELVE_FILE_EXTENSIONS (list): Description
+    SORTDEBUG (bool): Description
+    VALID_IMAGE_EXTENSIONS (list): Description
+"""
 import loom             # Simple threading wrapper
 import imagehash        # Perceptual image hashing
 import argparse         # Argument parsing
@@ -75,6 +88,13 @@ def CRC32(filename):
 
 
 def isImage(filename):
+    """
+    Args:
+        filename (str): Path to a file
+    
+    Returns:
+        bool: True if the path points to an image, else False.
+    """
     try:
         return filename.split(".")[-1].lower() in VALID_IMAGE_EXTENSIONS
     except IndexError:
@@ -83,6 +103,13 @@ def isImage(filename):
 
 
 def isVideo(filename):
+    """
+    Args:
+        filename (str): Path to a file
+    
+    Returns:
+        bool: True if the path points to an video, else False.
+    """
     try:
         return filename.split(".")[-1].lower() in ["webm", "mp4"]
     except IndexError:
@@ -94,11 +121,23 @@ IScachetotal = IScachefails = 0
 
 
 def imageSize(filename, quiet=False):
-    # Get a sortable integer representing the number of pixels in an image.
-    # assert os.path.isfile(filename), filename
+    """
+    Args:
+        filename (str): Path to an image on disk
+        quiet (bool, optional): Surpress printing information
+    
+    Returns:
+        int: Pixels in image or 0 if file is not an image.
+    
+    Raises:
+        FileNotFoundError: Path is not on disk
+    """
+
+    if isVideo(filename):
+        return 0
     if not isImage(filename):
-        if not quiet:
-            print("Unrecognized image format:", filename)
+        # if not quiet:
+        #     print("Unrecognized image format:", filename)
         return 0
     h4sh = md5(filename)
     hit = fsizecache.get(h4sh)
@@ -135,6 +174,12 @@ def sortDuplicatePaths(filenames):
     """
     Takes a list of files known to be duplicates
     and sorts them in order of "desirability"
+    
+    Args:
+        filenames (list): List of file paths
+    
+    Returns:
+        list: Sorted list of file paths
     """
 
     if len(filenames) <= 1:
@@ -164,6 +209,13 @@ def sortDuplicatePaths(filenames):
 
 
 def prune(shelvefile, verbose=False, show_pbar=True):
+    """Remove hashes without files.
+    
+    Args:
+        shelvefile (str): Name of database
+        verbose (bool, optional): Description
+        show_pbar (bool, optional): Description
+    """
     print("Removing dead hashes")
     empties = []
     
@@ -188,6 +240,14 @@ def prune(shelvefile, verbose=False, show_pbar=True):
 
 
 def scanDirs(shelvefile, image_paths, recheck=False, hash_size=16):
+    """Summary
+    
+    Args:
+        shelvefile (str): Name of database
+        image_paths (list): List of paths to check (globbed)
+        recheck (bool, optional): Don't skip known images
+        hash_size (int, optional): Hash size
+    """
     # Resolve glob to image paths
 
     # Make a list of image paths we already know about. We use this to skip images
@@ -209,7 +269,15 @@ def scanDirs(shelvefile, image_paths, recheck=False, hash_size=16):
     # SCAN: Scan filesystem for images and hash them.
 
     def fingerprintImage(db, image_path):
-        """Updates database db with phash data of image at image_path."""
+        """Updates database db with phash data of image at image_path.
+        
+        Args:
+            db (TYPE): Description
+            image_path (TYPE): Description
+        
+        Returns:
+            TYPE: Description
+        """
 
         # load the image and compute the difference hash
         try:
@@ -256,9 +324,13 @@ def scanDirs(shelvefile, image_paths, recheck=False, hash_size=16):
                 print("New file:", image_path, proc_hash)
             db[proc_hash] = db.get(proc_hash, []) + [filename]
 
+    # Reset forcedelete script
     open("forcedelete.sh", "w").close()
 
+    # Only check needed images
     images_to_fingerprint = [image_path for image_path in image_paths if (image_path not in known_paths) or recheck]
+    
+    # Progress and chunking
     num_images_to_fingerprint = len(images_to_fingerprint)
     chunk_size = 4000
 
@@ -274,12 +346,25 @@ def scanDirs(shelvefile, image_paths, recheck=False, hash_size=16):
 
 
 def getDuplicatesToDelete(shelvefile, interactive=False):
+    """Given a database, generate a list of duplicate files to delete.
+    
+    Args:
+        shelvefile (str): Name of database
+        interactive (bool, optional): Require user confirmation
+    
+    Returns:
+        list: List of file paths of images marked for deletion
+    
+    Raises:
+        AssertionError: Internal error, abort
+    """
     # Initialize a list of file paths to delete at the end.
     filestodelete = []
+
     # CHECK: Process and evalulate duplicate fingerprints.
     print("Checking database for duplicates")
     i = 0
-    for filenames in generateDuplicateFilelists(shelvefile, threshhold=2):
+    for filenames in generateDuplicateFilelists(shelvefile, threshhold=2, progressbar_allowed=(not interactive)):
         # filenames = sortDuplicatePaths(filenames)
         if interactive:
             # The user gets to pick the image to keep.
@@ -333,6 +418,21 @@ def getDuplicatesToDelete(shelvefile, interactive=False):
 
 def generateDuplicateFilelists(shelvefile, bundleHash=False, threshhold=1, quiet=GLOBAL_QUIET_DEFAULT, sort=True):
     """Generate lists of files which all have the same hash."""
+def generateDuplicateFilelists(shelvefile, bundleHash=False, threshhold=1, quiet=GLOBAL_QUIET_DEFAULT, sort=True, progressbar_allowed=True):
+    """Generate lists of files which all have the same hash.
+    
+    Args:
+        shelvefile (TYPE): Description
+        bundleHash (bool, optional): Description
+        threshhold (int, optional): Description
+        quiet (TYPE, optional): Description
+        sort (bool, optional): Description
+        progressbar_allowed (bool, optional): Description
+    
+    Yields:
+        tuple: (list, hash) OR
+        list: File paths of duplicates
+    """
     print("Generating information about duplicate images from database")
 
     with ju.RotatingHandler(shelvefile, basepath="databases", readonly=False) as db:
@@ -382,22 +482,18 @@ def generateDuplicateFilelists(shelvefile, bundleHash=False, threshhold=1, quiet
                     yield (filenames, h)
                 else:
                     yield filenames
-    # close
-
-    # if len(freshening.keys()) > 0:
-    #     print("Adjusting {} updated records in database".format(
-    #         len(freshening.keys())))
-    #     with ju.Handler(shelvefile, basepath="databases", readonly=False) as db:
-    #         for key in freshening.keys():
-    #             db[key] = freshening[key]
-    #     freshening.clear()
 
     if pbar:
         pbar.finish()
 
 
 def trash(file, verbose=True):
-
+    """Send a file to trash.
+    
+    Args:
+        file (str): Path to a file
+        verbose (bool, optional)
+    """
     assert os.path.isfile(file)  # We are asked to delete a real file.
     try:
         send2trash(file)
@@ -419,6 +515,11 @@ def trash(file, verbose=True):
 
 
 def deleteFiles(filestodelete):
+    """Trash multiple files
+    
+    Args:
+        filestodelete (list): File paths to delete
+    """
     print("Deleting files")
     if len(filestodelete) > 0:
         delete_spool = loom.Spool(20)
@@ -434,7 +535,19 @@ def deleteFiles(filestodelete):
 
 def magickCompareDuplicates(shelvefile):
 
+    """Use imagemagick to generate comparisons.
+    
+    Args:
+        shelvefile (str): Name of database
+    """
     def writeTriggerFile(destfldr, sortedFilenames, bundled_hash):
+        """Write a file to perform deletions
+        
+        Args:
+            destfldr (str): Comparison directory
+            sortedFilenames (str): Already sorted filenames
+            bundled_hash (str): Common hash
+        """
         with open("./comparison/{}/{}_pullTrigger.sh".format(destfldr, bundled_hash), "w", newline='\n') as triggerFile:
             triggerFile.write("#!/bin/bash")
             triggerFile.write("\n# rm -v {}".format(sortedFilenames[0]))
@@ -443,10 +556,21 @@ def magickCompareDuplicates(shelvefile):
             triggerFile.write("\nrm -v ./{}_pullTrigger.sh".format(bundled_hash))
 
     print("Running comparisons.")
+
+    # Make directories
     for destfldr in [shelvefile + "_sizediff", shelvefile]:
         os.makedirs("./comparison/{}/".format(destfldr), exist_ok=True)
 
     def processMagickAction(sortedFilenames, bundled_hash):
+        """Summary
+        
+        Args:
+            sortedFilenames (TYPE): Description
+            bundled_hash (TYPE): Description
+        
+        Returns:
+            TYPE: Description
+        """
         if not all(isImage(sfilepath) for sfilepath in sortedFilenames):
             # print("NOT attempting magick on files")
             # print(sortedFilenames)
@@ -537,6 +661,19 @@ done
     
 
 def runMagickCommand(shelvefile, precmd, midcmd, fileact, sortedFilenames, bundled_hash):
+    """Summary
+    
+    Args:
+        shelvefile (TYPE): Description
+        precmd (TYPE): Description
+        midcmd (TYPE): Description
+        fileact (TYPE): Description
+        sortedFilenames (TYPE): Description
+        bundled_hash (TYPE): Description
+    
+    Raises:
+        subprocess.CalledProcessError: Description
+    """
     outfile = "./comparison/{}/{}_{}.jpg".format(shelvefile, bundled_hash, fileact)
     command = ["magick"]
     command += precmd.split(" ")
@@ -556,9 +693,10 @@ def runMagickCommand(shelvefile, precmd, midcmd, fileact, sortedFilenames, bundl
 def renameFiles(shelvefile, mock=True, clobber=False):
     """Processes the entire "rename files" command. 
     Given duplicate files present in the database, and their hashes, renames them. 
+    
     File names are:
-    "[PERCEPTUAL HASH]"         | if file is unique
-    "[PERCEPTUAL HASH]_[CRC32]" | if file has hash collisions.
+        "[PERCEPTUAL HASH]"         | if file is unique
+        "[PERCEPTUAL HASH]_[CRC32]" | if file has hash collisions.
     
     Args:
         shelvefile (str): Name of database to use
@@ -567,7 +705,7 @@ def renameFiles(shelvefile, mock=True, clobber=False):
            Due to the CRC32 check, this is usually very safe.
            As an extra precaution, overwritten files are trashed.
     
-    Returns:
+    No Longer Returned:
         Returns early if
         - There are no rename operations to attempt
     """
@@ -582,9 +720,18 @@ def renameFiles(shelvefile, mock=True, clobber=False):
         Successful operations accumulate in list successful_operations
         
         Args:
+            old_path (TYPE): Description
+            new_name (TYPE): Description
+            bundled_hash (str): Perceptual hash of image at file
+            verboseSuccess (bool, optional): Description
+            verboseError (bool, optional): Description
+        
+        Deleted Parameters:
             old (str): Old file path
             new (str): New file path
-            bundled_hash (str): Perceptual hash of image at file
+        
+        Returns:
+            TYPE: Description
         """
         if mock:
             if verboseError:
@@ -642,6 +789,9 @@ def renameFiles(shelvefile, mock=True, clobber=False):
 def parse_args():
     """
     Parse args from command line and return the namespace
+    
+    Returns:
+        TYPE: Description
     """
     DEFAULT_HASH_SIZE = 12
     ap = argparse.ArgumentParser()
