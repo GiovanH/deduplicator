@@ -163,8 +163,7 @@ def imageSize(filename, quiet=False):
         return Image.MAX_IMAGE_PIXELS
     except FileNotFoundError:
         print("WARNING! File not found: ", filename)
-        raise AssertionError(filename)
-        return 0
+        raise FileNotFoundError(filename)
     except OSError:
         print("WARNING! OS error with file: ", filename)
         return 0
@@ -234,7 +233,7 @@ def prune(shelvefile, verbose=False, show_pbar=True):
             if verbose:
                 print("Cleared key:", key)
         if pbar:
-            pbar.finish
+            pbar.finish()
 
         ju.save(db, shelvefile, basepath="databases")
 
@@ -396,7 +395,8 @@ def getDuplicatesToDelete(shelvefile, interactive=False):
                     good_ans = True
                 except ValueError:
                     print("Not a valid number. ")  # Have another go.
-        else:  # Not interactive.
+        else:  
+            # Not interactive.
             # We keep the FIRST file in the sort.
             # We'll delete the rest.
             goingtokeep = filenames[0]
@@ -438,7 +438,7 @@ def generateDuplicateFilelists(shelvefile, bundleHash=False, threshhold=1, quiet
     with ju.RotatingHandler(shelvefile, basepath="databases", readonly=False) as db:
 
         pbar = None
-        if PROGRESSBAR_ALLOWED:
+        if progressbar_allowed:
             pbar = progressbar.ProgressBar(max_value=len(db.keys()), redirect_stdout=True)
             i = 0
 
@@ -733,13 +733,14 @@ def renameFiles(shelvefile, mock=True, clobber=False):
         Returns:
             TYPE: Description
         """
-        if mock:
-            if verboseError:
-                print("MOCK: {} -X-> {}".format(old, new))
-            return
 
         old_dir, old_name = os.path.split(old_path)
         new_path = os.path.join(old_dir, new_name)
+
+        if mock:
+            if verboseError:
+                print("MOCK: {} -X-> {}".format(old_path, new_path))
+            return
 
         try:
             moveFileToFile(old_path, new_path, clobber=False)
@@ -749,7 +750,7 @@ def renameFiles(shelvefile, mock=True, clobber=False):
                 # Trash existing, then replace.
                 trash(new_path)
                 moveFileToFile(old_path, new_path, clobber=False)
-        successful_operations.append((old, new, bundled_hash,))
+        successful_operations.append((old_path, new_path, bundled_hash,))
 
     print("Renaming")
     with loom.Spool(8, name="Renamer") as renamer:
@@ -757,6 +758,8 @@ def renameFiles(shelvefile, mock=True, clobber=False):
             i = 0
             # for old_file_name in sortDuplicatePaths(filepaths):
             for old_file_path in filepaths:
+                if old_file_path.find("!") > -1:
+                    continue
                 i += 1
                 (old_file_dir, old_file_name) = os.path.split(old_file_path)
             # try:
@@ -765,10 +768,12 @@ def renameFiles(shelvefile, mock=True, clobber=False):
                     suffix=("_{}".format(CRC32(old_file_path)) if len(filepaths) is not 1 else ""),
                     ext=old_file_name.split('.')[-1]
                 )
-                renamer.enqueue(target=processRenameOperation, args=(old_file_path, new_file_name, bundled_hash))
+                if new_file_name != old_file_name:
+                    renamer.enqueue(target=processRenameOperation, args=(old_file_path, new_file_name, bundled_hash))
 
     # Create undo file
-    ufilename = "undorename_{}_{}.sh".format(shelvefile, str(int(time())))
+    os.makedirs("undo", exist_ok=True)
+    ufilename = "undo/undorename_{}_{}.sh".format(shelvefile, str(int(time())))
     print("Creating undo file at {}".format(ufilename))
     with open(ufilename, "w+", newline='\n') as scriptfile:
         scriptfile.write("#!/bin/bash\n")
