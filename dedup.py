@@ -286,7 +286,7 @@ def scanDirs(shelvefile, image_paths, recheck=False, hash_size=16):
             if isVideo(image_path):
                 proc_hash = md5(image_path)
             elif not isImage(image_path):
-                print("Unrecognized file format:", image_path)
+                # print("Unrecognized file format:", image_path)
                 return
             else:            
                 image = Image.open(image_path)
@@ -303,17 +303,20 @@ def scanDirs(shelvefile, image_paths, recheck=False, hash_size=16):
             traceback.print_exc()
             return
         except OSError:
+            traceback.print_exc(limit=2)
             print("ERROR: File", image_path, "is corrupt or invalid.")
-            print("Trashing file.")
-            try:
-                trash(image_path)
-            except Exception:
-                print("...but it failed!")
-                traceback.print_exc(limit=1)
-                with open("forcedelete.sh", "a", newline='\n') as shellfile:
-                    shellfile.write("rm -vf '{}' \n".format(image_path))
+            with open("forcedelete.sh", "a", newline='\n') as shellfile:
+                shellfile.write("rm -vf '{}' \n".format(image_path))
+            # print("Trashing file.")
+            # try:
+            #     trash(image_path)
+            # except Exception:
+            #     print("...but it failed!")
+            #     traceback.print_exc(limit=1)
+            #     with open("forcedelete.sh", "a", newline='\n') as shellfile:
+            #         shellfile.write("rm -vf '{}' \n".format(image_path))
 
-                pass  # Not a dealbreaker.
+            #     pass  # Not a dealbreaker.
             return
 
         filename = image_path  # [image_path.rfind("/") + 1:]
@@ -409,18 +412,15 @@ def getDuplicatesToDelete(shelvefile, interactive=False):
                 for sym in [filenames, goingtokeep, goingtodelete]:
                     print(sym)
                 raise AssertionError("Internal logic consistancy error. Program instructed to consider ALL images with a given hash as extraneous. Please debug.")
+        
         # However the method, add all our doomed files to the list.
         filestodelete += goingtodelete
 
         # And explain ourselves.
-        print("\n\t* " + goingtokeep)
-        print(
-            "\n".join(["\t  " + f for f in goingtodelete]))
+        print("\n\t* " + goingtokeep, *["\n\t  " + f for f in goingtodelete])
     return filestodelete
 
 
-def generateDuplicateFilelists(shelvefile, bundleHash=False, threshhold=1, quiet=GLOBAL_QUIET_DEFAULT, sort=True):
-    """Generate lists of files which all have the same hash."""
 def generateDuplicateFilelists(shelvefile, bundleHash=False, threshhold=1, quiet=GLOBAL_QUIET_DEFAULT, sort=True, progressbar_allowed=True):
     """Generate lists of files which all have the same hash.
     
@@ -552,9 +552,9 @@ def magickCompareDuplicates(shelvefile):
         """
         with open("./comparison/{}/{}_pullTrigger.sh".format(destfldr, bundled_hash), "w", newline='\n') as triggerFile:
             triggerFile.write("#!/bin/bash")
-            triggerFile.write("\n# rm -v {}".format(sortedFilenames[0]))
-            triggerFile.write("\nrm -v {}".format(" ".join('"{}"'.format(filename) for filename in sortedFilenames[1:])))
-            triggerFile.write("\nrm -v ./{}*.jpg".format(bundled_hash))
+            triggerFile.write("\n#rm -v \"{}\"".format(sortedFilenames[0]))
+            triggerFile.write("\n rm -v {}".format(" ".join('"{}"'.format(filename) for filename in sortedFilenames[1:])))
+            triggerFile.write("\n\nrm -v ./{}*.jpg".format(bundled_hash))
             triggerFile.write("\nrm -v ./{}_pullTrigger.sh".format(bundled_hash))
 
     print("Running comparisons.")
@@ -587,7 +587,7 @@ def magickCompareDuplicates(shelvefile):
 
         os.makedirs("./comparison/{}/".format(destfldr), exist_ok=True)
 
-        compare_outfile = "./comparison/{}/{}_compare_montage.jpg".format(destfldr, bundled_hash)
+        compare_outfile = "./comparison/{}/{}_{}_compare_montage.jpg".format(destfldr, len(sortedFilenames), bundled_hash)
         if os.path.exists(compare_outfile):
             return
 
