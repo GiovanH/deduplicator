@@ -254,6 +254,9 @@ def scanDirs(shelvefile, image_paths, recheck=False, hash_size=16):
     # Make a list of image paths we already know about. We use this to skip images
     # that probably haven't changed.
     # If we're rechecking, we don't need to build this list at all!
+
+    known_paths = set()
+
     if not recheck:
         print(shelvefile)
         with ju.RotatingHandler(shelvefile, default=dict(), basepath="databases", readonly=True) as db:
@@ -303,7 +306,7 @@ def scanDirs(shelvefile, image_paths, recheck=False, hash_size=16):
             traceback.print_exc()
             return
         except OSError:
-            traceback.print_exc(limit=2)
+            # traceback.print_exc(limit=2)
             print("ERROR: File", image_path, "is corrupt or invalid.")
             with open("forcedelete.sh", "a", newline='\n') as shellfile:
                 shellfile.write("rm -vf '{}' \n".format(image_path))
@@ -692,7 +695,94 @@ def runMagickCommand(shelvefile, precmd, midcmd, fileact, sortedFilenames, bundl
         raise subprocess.CalledProcessError(result.returncode, command, result)
 
 
-def renameFiles(shelvefile, mock=True, clobber=False):
+
+def remetaFiles(shelvefile, mock=True, clobber=False):
+    """Processes the entire "remeta files" command. 
+    Given duplicate files present in the database, and their hashes, remetas them. 
+    
+    File names are:
+        "[PERCEPTUAL HASH]"         | if file is unique
+        "[PERCEPTUAL HASH]_[CRC32]" | if file has hash collisions.
+    
+    Args:
+        shelvefile (str): Name of database to use
+        mock (bool, optional): If true, does not actually perform disk operations.
+        clobber (bool, optional): Should files be overwritten?
+           Due to the CRC32 check, this is usually very safe.
+           As an extra precaution, overwritten files are trashed.
+    
+    No Longer Returned:
+        Returns early if
+        - There are no remeta operations to attempt
+    """
+
+    import piexif
+
+    # Define our function to thread
+    def processRemetaOperation(old_path, bundled_hash, verboseSuccess=False, verboseError=True):
+        """Appropriately remetas files. 
+        Designed to run in a thread. 
+        Successful operations accumulate in list successful_operations
+        
+        Args:
+            old_path (TYPE): Description
+            new_name (TYPE): Description
+            bundled_hash (str): Perceptual hash of image at file
+            verboseSuccess (bool, optional): Description
+            verboseError (bool, optional): Description
+        
+        Deleted Parameters:
+            old (str): Old file path
+            new (str): New file path
+        
+        Returns:
+            TYPE: Description
+        """
+
+        if mock:
+            if verboseError:
+                print("MOCK: {} -X-> {}".format(bundled_hash, old_path))
+            return
+
+        try:
+            im = Image.open(old_path)
+
+            # print(old_path)
+
+            if im.info.get("exif") is None:
+                return
+
+            exif_dict = piexif.load(im.info["exif"])
+                
+            field = piexif.ImageIFD.Software
+
+            old_id = exif_dict["0th"].get(field)
+            new_id = bundled_hash
+
+            # print(old_id, new_id)
+            # print(exif_dict)
+
+            if old_id != new_id:
+                exif_dict["0th"][field] = new_id
+                exif_bytes = piexif.dump(exif_dict)
+
+                print(old_path, bundled_hash)
+                im.save(old_path, exif=exif_bytes)
+            else:
+                pass
+        except Exception as e:
+            print(traceback.format_exc())
+
+    print("Setting EXIF metadata")
+    with loom.Spool(8, name="remeta'r") as remetar:
+        for (filepaths, bundled_hash) in generateDuplicateFilelists(shelvefile, bundleHash=True, threshhold=1, sort=False):
+            # for old_file_name in sortDuplicatePaths(filepaths):
+            for old_file_path in filepaths:
+                # processRemetaOperation(old_file_path, bundled_hash)
+                remetar.enqueue(target=processRemetaOperation, args=(old_file_path, bundled_hash))
+
+
+def renameFiles(shelvefile, image_paths, mock=True, clobber=False):
     """Processes the entire "rename files" command. 
     Given duplicate files present in the database, and their hashes, renames them. 
     
@@ -762,6 +852,7 @@ def renameFiles(shelvefile, mock=True, clobber=False):
             for old_file_path in filepaths:
                 if old_file_path.find("!") > -1:
                     continue
+
                 i += 1
                 (old_file_dir, old_file_name) = os.path.split(old_file_path)
             # try:
@@ -843,6 +934,9 @@ def parse_args():
         "-r", "--rename", action="store_true",
         help="Rename files to their perceptual hash, ordering them by similarity.")
     ap.add_argument(
+        "-e", "--remeta", action="store_true",
+        help="Set EXIF data")
+    ap.add_argument(
         "-d", "--delete", action="store_true",
         help="Delete duplicate files by moving them to a temporary directory.")
     ap.add_argument(
@@ -913,8 +1007,12 @@ def main():
 
     ju.save(fsizecache, "sizes")
     # Run commands as requested
+    if args.remeta:
+        remetaFiles(shelvefile, mock=args.mock, clobber=args.clobber)
+
+    # Run commands as requested
     if args.rename:
-        renameFiles(shelvefile, mock=args.mock, clobber=args.clobber)
+        renameFiles(shelvefile, image_paths, mock=args.mock, clobber=args.clobber)
 
     if args.compare:
         magickCompareDuplicates(shelvefile)
