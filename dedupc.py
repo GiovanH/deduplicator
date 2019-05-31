@@ -493,7 +493,7 @@ def parse_args():
     ap = argparse.ArgumentParser()
 
     ap.add_argument(
-        "-f", "--files", nargs='+', 
+        "-f", "--scanfiles", nargs='+', 
         help="File globs that select which files to check. Globstar supported.")
     ap.add_argument(
         "--files-exempt", nargs='+', required=False, default=list(),
@@ -564,10 +564,10 @@ def main():
     db = dupedb.db(shelvefile, args.avoid, args.debug, args.verbose)
 
     # Scan directories for files and populate database
-    if args.files:
-        print("Crawling for files... (Use --noscan to skip this step)")
+    if args.scanfiles:
+        print("Crawling for files...")
         # print(args.files)
-        _image_paths = sum([glob.glob(a, recursive=True) for a in args.files], [])
+        _image_paths = sum([glob.glob(a, recursive=True) for a in args.scanfiles], [])
 
         # for k in _image_paths:
         #     print(k, *((j, k.find(j) == -1,) for j in args.files_exempt))
