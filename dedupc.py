@@ -4,6 +4,8 @@ import glob             # File globbing
 from time import time   # Time IDs
 import os.path          # isfile() method
 
+import colorama
+
 from send2trash import send2trash
 import snip
 
@@ -13,6 +15,35 @@ from PIL import Image
 import dupedb
 
 SHELVE_FILE_EXTENSIONS = ["json"]
+
+
+colorama.init(autoreset=False)
+
+
+def print_colored(color, *args, **kwargs):
+    print(*args, **kwargs)
+    # print(color, *args, **kwargs)
+    # print(colorama.Fore.RESET, end="")
+
+
+def print_io(*args, **kwargs):
+    return print_colored(colorama.Fore.CYAN, *args, **kwargs)
+
+
+def print_warn(*args, **kwargs):
+    return print_colored(colorama.Fore.YELLOW, *args, **kwargs)
+
+
+def print_info(*args, **kwargs):
+    return print_colored(colorama.Fore.WHITE, *args, **kwargs)
+
+
+def print_debug(*args, **kwargs):
+    return print_colored(colorama.Fore.MAGENTA, *args, **kwargs)
+
+
+def print_err(*args, **kwargs):
+    return print_colored(colorama.Fore.RED, *args, **kwargs)
 
 
 def trash(file, verbose=True):
@@ -26,16 +57,16 @@ def trash(file, verbose=True):
     try:
         send2trash(file)
         if verbose:
-            print("{} -> [TRASH]".format(file))
+            print_io("{} -> [TRASH]".format(file))
     except (PermissionError, FileNotFoundError) as e:
         if not os.path.isfile(file):
             # Well, the file's gone, anyway.
-            print("TRASH ODDITY: {}".format(file))
+            print_warn("TRASH ODDITY: {}".format(file))
             return
         # The file is still here.
 
         if isinstance(e, FileNotFoundError):
-            print("TRASH FAILED: {} (Not found)".format(file))
+            print_err("TRASH FAILED: {} (Not found)".format(file))
 
         os.unlink(file)
         if not os.path.isfile(file):
@@ -48,7 +79,7 @@ def deleteFiles(filestodelete):
     Args:
         filestodelete (list): File paths to delete
     """
-    print("Deleting files")
+    print_info("Deleting files")
     if len(filestodelete) > 0:
         delete_spool = snip.loom.Spool(20)
         for file in filestodelete:
@@ -58,7 +89,7 @@ def deleteFiles(filestodelete):
             )
         # Cleanup
         delete_spool.finish()
-        print("Finished.")
+        print_info("Finished.")
 
 
 def magickCompareDuplicates(db):
@@ -82,8 +113,6 @@ def magickCompareDuplicates(db):
             triggerFile.write("\n\nrm -v ./{}*.jpg".format(bundled_hash))
             triggerFile.write("\nrm -v ./{}_pullTrigger.sh".format(bundled_hash))
 
-    print("Running comparisons.")
-
     # Make directories
     for destfldr in [db.shelvefile + "_sizediff", db.shelvefile]:
         os.makedirs("./comparison/{}/".format(destfldr), exist_ok=True)
@@ -99,11 +128,9 @@ def magickCompareDuplicates(db):
             TYPE: Description
         """
         if not all(dupedb.isImage(sfilepath) for sfilepath in sortedFilenames):
-            # print("NOT attempting magick on files")
-            # print(sortedFilenames)
             return
 
-        sizediff = (len(set([dupedb.imageSize(path) for path in sortedFilenames])) > 1)
+        sizediff = (len(set([db.getMediaSize(path) for path in sortedFilenames])) > 1)
 
         if sizediff:
             destfldr = db.shelvefile + "_sizediff"
@@ -112,21 +139,9 @@ def magickCompareDuplicates(db):
 
         os.makedirs("./comparison/{}/".format(destfldr), exist_ok=True)
 
-        compare_outfile = "./comparison/{}/{}_{}_compare_montage.jpg".format(destfldr, len(sortedFilenames), bundled_hash)
-        if os.path.exists(compare_outfile):
-            return
-
-            # montageFileSize = sum(imageSize(p) for p in sortedFilenames)
-            # existSize = imageSize(compare_outfile)
-            # if (montageFileSize > 0) and (existSize % montageFileSize == 0) or any(s.split(".")[-1] == "gif" for s in sortedFilenames):  # Might be an exact multiple in case of gifs
-            #     # print("Path", compare_outfile, "already exists, size matches, skipping.")
-            #     continue
-            # else:
-            #     print("Overwriting comparison file", compare_outfile, imageSize(compare_outfile), "px vs", montageFileSize)
-
         if sizediff:
             # try:
-            runMagickCommand(destfldr, "montage -mode concatenate", None, "compare_montage", sortedFilenames, bundled_hash)
+            runMagickCommand(destfldr, "montage -mode concatenate", None, "compare_!montage", sortedFilenames, bundled_hash)
             writeTriggerFile(destfldr, sortedFilenames, bundled_hash)
             # except subprocess.CalledProcessError as e:
             #     pass
@@ -134,12 +149,49 @@ def magickCompareDuplicates(db):
         else:
             # TODO: Detect color!
             # try:
-            runMagickCommand(destfldr, "montage -mode concatenate", None, "compare_montage", sortedFilenames, bundled_hash)
+            runMagickCommand(destfldr, "montage -mode concatenate", None, "compare_!montage", sortedFilenames, bundled_hash)
             runMagickCommand(destfldr, "compare -fuzz 10%% -compose src -highlight-color Black -lowlight-color White", None, "compare", sortedFilenames, bundled_hash)
             writeTriggerFile(destfldr, sortedFilenames, bundled_hash)
             # except subprocess.CalledProcessError as e:
             #     pass
 
+    print_info("Removing orphaned comparison files")
+    for expected_images, destfldr in [(1, db.shelvefile + "_sizediff"), (2, db.shelvefile)]:
+
+        with snip.loom.Spool(4, name="Trash") as trashSpool:
+
+            # Shell files
+            for sh in glob.glob(".\\comparison\\{d}\\*.sh".format(d=destfldr)):
+                sh_hash = sh.split("\\")[-1].split("_")[0]
+                hashs_images = glob.glob(".\\comparison\\{d}\\{h}_compare*.jpg".format(d=destfldr, h=sh_hash))
+                if len(hashs_images) != expected_images:
+                    print_err("Shell file", sh_hash, "missing images", sh)
+                    trashSpool.enqueue(target=trash, args=(sh,))
+
+            # Image files
+            for imgfil in glob.glob(".\\comparison\\{d}\\*.jpg".format(d=destfldr)):
+                imgfil_hash = imgfil.split("\\")[-1].split("_")[0]
+                hashs_images_glob = ".\\comparison\\{d}\\{h}_compare*.jpg".format(d=destfldr, h=imgfil_hash)
+                hashs_images = glob.glob(hashs_images_glob)
+
+                triggerfile_title = "{}_pullTrigger.sh".format(imgfil_hash)
+                shfil = ".\\comparison\\{d}\\{t}".format(d=destfldr, t=triggerfile_title)
+
+                if not (len(hashs_images) == expected_images):
+                    print_err("Image", imgfil, "missing neighbors.")
+                    print_debug(hashs_images_glob)
+                    print_debug(hashs_images)
+                    print("")
+                elif not os.path.isfile(shfil):
+                    print_err("Image", imgfil, "missing shell file: ", shfil)
+                else:
+                    continue
+                for file in filter(os.path.isfile, hashs_images):
+                    trashSpool.enqueue(target=trash, args=(file,))
+                    pass
+            trashSpool.finish(resume=True)
+
+    print_info("Running comparisons.")
     with snip.loom.Spool(1, name="Magick") as magickSpool:
         for (sortedFilenames, bundled_hash) in db.generateDuplicateFilelists(bundleHash=True, threshhold=2):
             magickSpool.enqueue(target=processMagickAction, args=(sortedFilenames, bundled_hash,))
@@ -147,33 +199,8 @@ def magickCompareDuplicates(db):
 
     for destfldr in [db.shelvefile + "_sizediff", db.shelvefile]:
 
-        # Remove orphaned files
-        with snip.loom.Spool(4, name="Trash") as trashSpool:
-            # Image files
-            for imgfil in glob.glob(".\\comparison\\{d}\\*.jpg".format(d=destfldr)):
-                imgfil_hash = imgfil.split("\\")[-1].split("_")[0]
-                hashs_images = glob.glob(".\\comparison\\{d}\\{h}_compare*.jpg".format(d=destfldr, h=imgfil_hash))
-                triggerfile = "{}_pullTrigger.sh".format(imgfil_hash)
-                shfil = ".\\comparison\\{d}\\{t}".format(d=destfldr, t=triggerfile)
-                if (destfldr == db.shelvefile and len(hashs_images) != 2) or (destfldr == db.shelvefile + "_sizediff" and len(hashs_images) != 1):
-                    print("Image", imgfil, "missing neighbors.")
-                elif not os.path.isfile(shfil):
-                    print("Image", imgfil, "missing shell file: ", shfil)
-                else:
-                    continue
-                for file in hashs_images:
-                    trashSpool.enqueue(target=trash, args=(file,))
-            trashSpool.finish(resume=True)
-            # Shell files
-            for sh in glob.glob(".\\comparison\\{d}\\*.sh".format(d=destfldr)):
-                sh_hash = sh.split("\\")[-1].split("_")[0]
-                hashs_images = glob.glob(".\\comparison\\{d}\\{h}_compare*.jpg".format(d=destfldr, h=sh_hash))
-                if len(hashs_images) == 0:
-                    print("Shell file", sh_hash, "missing images", sh)
-                    trashSpool.enqueue(target=trash, args=(sh,))
-
         # Write allfiles pulltrigger
-        print("Writing XXX_ALLFILES")
+        print_info("Writing XXX_ALLFILES")
         with open("./comparison/{}/XXX_ALLFILES_pullTrigger_.sh".format(destfldr), "w", newline='\n') as triggerFile:
             triggerFile.write("#!/bin/bash")
             triggerFile.write(
@@ -202,18 +229,36 @@ def runMagickCommand(shelvefile, precmd, midcmd, fileact, sortedFilenames, bundl
         subprocess.CalledProcessError: Description
     """
     outfile = "./comparison/{}/{}_{}.jpg".format(shelvefile, bundled_hash, fileact)
+
+    if os.path.exists(outfile):
+        # print("skip", bundled_hash)
+        # return
+
+        montageFileSize = sum(dupedb.imageSize(p) for p in sortedFilenames)
+        existSize = dupedb.imageSize(outfile)
+        if montageFileSize == existSize:
+            # print_warn("Path", outfile, "already exists, size matches, skipping.", montageFileSize)
+            return
+        else:
+            print_warn("Overwriting comparison file", outfile, existSize, "px vs", montageFileSize)
+
     command = ["magick"]
     command += precmd.split(" ")
     command += sortedFilenames
     if midcmd != "" and midcmd is not None:
         command += midcmd.split(" ")
     command.append(outfile)
-    # print(command)
+    
+    print_io(outfile)
+    
     result = subprocess.run(command, capture_output=True, check=False)
     if len(result.stderr) + len(result.stdout) > 0:
-        print(*((c if c.count(" ") == 0 else '"{c}"'.format(c=c)) for c in command))
+        print_err(*((c if c.count(" ") == 0 else '"{}"'.format(c)) for c in command))
         # print("OUT:", bytes(result.stdout).decode("unicode_escape"))
-        print("ERR:", bytes(result.stderr).decode("unicode_escape"))
+        try:
+            print_err("ERR:", bytes(result.stderr).decode("unicode_escape"))
+        except UnicodeDecodeError:
+            print_err(result.stderr)
         raise subprocess.CalledProcessError(result.returncode, command, result)
 
 
@@ -233,9 +278,9 @@ def getDuplicatesToDelete(db, interactive=False):
         filestodelete = []
 
         # CHECK: Process and evalulate duplicate fingerprints.
-        print("Checking database for duplicates")
+        print_info("Checking database for duplicates")
         i = 0
-        for filenames in db.generateDuplicateFilelists(db.shelvefile, threshhold=2, progressbar_allowed=(not interactive)):
+        for filenames in db.generateDuplicateFilelists(threshhold=2):
             # filenames = sortDuplicatePaths(filenames)
             if interactive:
                 # The user gets to pick the image to keep.
@@ -283,19 +328,18 @@ def getDuplicatesToDelete(db, interactive=False):
             filestodelete += goingtodelete
 
             # And explain ourselves.
-            print("\n\t* " + goingtokeep, *["\n\t  " + f for f in goingtodelete])
+            print_info("\n\t* " + goingtokeep, *["\n\t  " + f for f in goingtodelete])
         return filestodelete
 
 
 def listDuplicates(db):
-    for (filepaths, bundled_hash) in db.generateDuplicateFilelists(bundleHash=True, threshhold=1, sort=False):
-        if len(filepaths) > 1:
-            print(bundled_hash)
-            lfilepaths = len(filepaths)
-            tags = [" └─ " if i == lfilepaths - 1 else " ├─ " for i in range(0, lfilepaths)]
-            for i, filepath in enumerate(filepaths):
-                print(tags[i], filepath, sep="")
-            print("\n")
+    for (filepaths, bundled_hash) in db.generateDuplicateFilelists(bundleHash=True, threshhold=2, sort=True):
+        print_info(bundled_hash)
+        lfilepaths = len(filepaths)
+        tags = [" └─ " if i == lfilepaths - 1 else " ├─ " for i in range(0, lfilepaths)]
+        for i, filepath in enumerate(filepaths):
+            print_info(tags[i], filepath, sep="")
+        print_info("\n")
 
 
 def remetaFiles(db, mock=True, clobber=False):
@@ -343,7 +387,7 @@ def remetaFiles(db, mock=True, clobber=False):
 
         if mock:
             if verboseError:
-                print("MOCK: {} -X-> {}".format(bundled_hash, old_path))
+                print_info("MOCK: {} -X-> {}".format(bundled_hash, old_path))
             return
 
         try:
@@ -368,14 +412,14 @@ def remetaFiles(db, mock=True, clobber=False):
                 exif_dict["0th"][field] = new_id
                 exif_bytes = piexif.dump(exif_dict)
 
-                print(old_path, bundled_hash)
+                print_io(old_path, bundled_hash)
                 im.save(old_path, exif=exif_bytes)
             else:
                 pass
         except Exception as e:
-            print(traceback.format_exc())
+            print_err(traceback.format_exc())
 
-    print("Setting EXIF metadata")
+    print_info("Setting EXIF metadata")
     with snip.loom.Spool(8, name="remeta'r") as remetar:
         for (filepaths, bundled_hash) in db.generateDuplicateFilelists(bundleHash=True, threshhold=1, sort=False):
             # for old_file_name in sortDuplicatePaths(filepaths):
@@ -384,7 +428,45 @@ def remetaFiles(db, mock=True, clobber=False):
                 remetar.enqueue(target=processRemetaOperation, args=(old_file_path, bundled_hash))
 
 
-def renameFiles(db, image_paths, mock=True, clobber=False):
+def processRenameOperation(old_path, new_name, bundled_hash, successful_operations, verbose=False, mock=False, clobber=False):
+    """Appropriately renames files. 
+    Designed to run in a thread. 
+    Successful operations accumulate in list successful_operations
+
+    Args:
+        old_path (TYPE): Description
+        new_name (TYPE): Description
+        bundled_hash (str): Perceptual hash of image at file
+        verboseSuccess (bool, optional): Description
+        verboseError (bool, optional): Description
+
+    Deleted Parameters:
+        old (str): Old file path
+        new (str): New file path
+
+    Returns:
+        TYPE: Description
+    """
+
+    old_dir, old_name = os.path.split(old_path)
+    new_path = os.path.join(old_dir, new_name)
+
+    if mock:
+        print_warn("MOCK: {} -X-> {}".format(old_path, new_path))
+        return
+
+    try:
+        snip.filesystem.moveFileToFile(old_path, new_path, clobber=False)
+    except FileExistsError as e:
+        # Implement our own clobber behavior
+        if clobber:
+            # Trash existing, then replace.
+            trash(new_path)
+            snip.filesystem.moveFileToFile(old_path, new_path, clobber=False)
+    successful_operations.append((old_path, new_path, bundled_hash,))
+
+
+def renameFilesFromDb(db, mock=True, clobber=False):
     """Processes the entire "rename files" command. 
     Given duplicate files present in the database, and their hashes, renames them. 
 
@@ -407,46 +489,7 @@ def renameFiles(db, image_paths, mock=True, clobber=False):
     # Track successful file operations
     successful_operations = []
 
-    # Define our function to thread
-    def processRenameOperation(old_path, new_name, bundled_hash, verboseSuccess=False, verboseError=True):
-        """Appropriately renames files. 
-        Designed to run in a thread. 
-        Successful operations accumulate in list successful_operations
-
-        Args:
-            old_path (TYPE): Description
-            new_name (TYPE): Description
-            bundled_hash (str): Perceptual hash of image at file
-            verboseSuccess (bool, optional): Description
-            verboseError (bool, optional): Description
-
-        Deleted Parameters:
-            old (str): Old file path
-            new (str): New file path
-
-        Returns:
-            TYPE: Description
-        """
-
-        old_dir, old_name = os.path.split(old_path)
-        new_path = os.path.join(old_dir, new_name)
-
-        if mock:
-            if verboseError:
-                print("MOCK: {} -X-> {}".format(old_path, new_path))
-            return
-
-        try:
-            snip.filesystem.moveFileToFile(old_path, new_path, clobber=False)
-        except FileExistsError as e:
-            # Implement our own clobber behavior
-            if clobber:
-                # Trash existing, then replace.
-                trash(new_path)
-                snip.filesystem.moveFileToFile(old_path, new_path, clobber=False)
-        successful_operations.append((old_path, new_path, bundled_hash,))
-
-    print("Renaming")
+    print_info("Renaming")
     with snip.loom.Spool(8, name="Renamer") as renamer:
         for (filepaths, bundled_hash) in db.generateDuplicateFilelists(bundleHash=True, threshhold=1, sort=False):
             i = 0
@@ -464,12 +507,16 @@ def renameFiles(db, image_paths, mock=True, clobber=False):
                     ext=old_file_name.split('.')[-1]
                 )
                 if new_file_name != old_file_name:
-                    renamer.enqueue(target=processRenameOperation, args=(old_file_path, new_file_name, bundled_hash))
+                    renamer.enqueue(
+                        target=processRenameOperation,
+                        args=(old_file_path, new_file_name, bundled_hash, successful_operations),
+                        kwargs={"mock": mock, "clobber": clobber}
+                    )
 
     # Create undo file
     os.makedirs("undo", exist_ok=True)
     ufilename = "undo/undorename_{}_{}.sh".format(db.shelvefile, str(int(time())))
-    print("Creating undo file at {}".format(ufilename))
+    print_io("Creating undo file at {}".format(ufilename))
     with open(ufilename, "w+", newline='\n') as scriptfile:
         scriptfile.write("#!/bin/bash\n")
         for (old, new, bundled_hash) in successful_operations:
@@ -477,9 +524,70 @@ def renameFiles(db, image_paths, mock=True, clobber=False):
                 old=old, new=new))
 
     # Write new filenames to database
-    print("Adding new files to database")
+    print_info("Adding new files to database")
     for (old, new, bundled_hash) in successful_operations:
         db.updateRaw(old, new, bundled_hash)
+
+
+def renameFilesFromPaths(filepaths, hash_size, mock=True, clobber=False):
+    """Processes the entire "rename files" command. 
+    Given duplicate files present in the database, and their hashes, renames them. 
+
+    File names are:
+        "[PERCEPTUAL HASH]"         | if file is unique
+        "[PERCEPTUAL HASH]_[CRC32]" | if file has hash collisions.
+
+    Args:
+        shelvefile (str): Name of database to use
+        mock (bool, optional): If true, does not actually perform disk operations.
+        clobber (bool, optional): Should files be overwritten?
+           Due to the CRC32 check, this is usually very safe.
+           As an extra precaution, overwritten files are trashed.
+
+    No Longer Returned:
+        Returns early if
+        - There are no rename operations to attempt
+    """
+
+    # Track successful file operations
+    successful_operations = []
+
+    i = 0
+
+    print_info("Renaming")
+    with snip.loom.Spool(8, name="Renamer") as renamer:
+        for old_file_path in filepaths:
+            if old_file_path.find("!") > -1:
+                continue
+
+            i += 1
+            (old_file_dir, old_file_name) = os.path.split(old_file_path)
+            try:
+                proc_hash = dupedb.getProcHash(old_file_path, hash_size)
+                new_file_name = "{hash}{suffix}.{ext}".format(
+                    hash=proc_hash,
+                    suffix=("_{}".format(snip.hash.CRC32(old_file_path)) if len(filepaths) is not 1 else ""),
+                    ext=old_file_name.split('.')[-1]
+                )
+                if new_file_name != old_file_name:
+                    renamer.enqueue(
+                        target=processRenameOperation,
+                        args=(old_file_path, new_file_name, proc_hash, successful_operations),
+                        kwargs={"mock": mock, "clobber": clobber}
+                    )
+            except AssertionError:
+                traceback.print_exc()
+                continue
+
+    # Create undo file
+    os.makedirs("undo", exist_ok=True)
+    ufilename = "undo/undorename_manual_{}.sh".format(str(int(time())))
+    print_io("Creating undo file at {}".format(ufilename))
+    with open(ufilename, "w+", newline='\n') as scriptfile:
+        scriptfile.write("#!/bin/bash\n")
+        for (old, new, bundled_hash) in successful_operations:
+            scriptfile.write('mv -v "{new}" "{old}" # 8^y\n'.format(
+                old=old, new=new))
 
 
 def parse_args():
@@ -522,6 +630,9 @@ def parse_args():
         "-a", "--avoid", nargs='+', default=[],
         help="Substrings in the path to penalize during file sorting.")
     ap.add_argument(
+        "-p", "--prioritize", nargs='+', default=[],
+        help="Substrings in the path to prioritize during file sorting.")
+    ap.add_argument(
         "--clobber",
         help="Allow overwriting files during rename.", action="store_true")
 
@@ -530,8 +641,11 @@ def parse_args():
         "-l", "--list", action="store_true",
         help="Show duplicate information on screen.")
     ap.add_argument(
-        "-r", "--rename", action="store_true",
-        help="Rename files to their perceptual hash, ordering them by similarity.")
+        "-r", "--renameDb", action="store_true",
+        help="Rename files to their perceptual hash, ordering them by similarity. Renames all images in DB.")
+    ap.add_argument(
+        "--renameFromPaths", action="store_true",
+        help="Rename files to their perceptual hash, ordering them by similarity. Only use images passed directly, not the database.")
     ap.add_argument(
         "-e", "--remeta", action="store_true",
         help="Set EXIF data")
@@ -551,6 +665,9 @@ def parse_args():
     ap.add_argument(
         "--noprogress", action="store_true",
         help="Disallow progress bars.")
+    ap.add_argument(
+        "--noprune", action="store_true",
+        help="Do not remove stale records from database. Opposite of purge.")
     # ap.add_argument("--nocheck", help="Don't search the database for duplicates, just fingerprint the files in --dataset.",
     #                 action="store_true")
     return ap.parse_args()
@@ -561,11 +678,11 @@ def main():
 
     shelvefile = "{0}.s{1}".format(args.shelve, args.hashsize)
 
-    db = dupedb.db(shelvefile, args.avoid, args.debug, args.verbose)
+    db = dupedb.db(shelvefile, args.avoid, args.prioritize, debug=args.debug, verbose=args.verbose)
 
     # Scan directories for files and populate database
     if args.scanfiles:
-        print("Crawling for files...")
+        print_debug("Crawling for files...")
         # print(args.files)
         _image_paths = sum([glob.glob(a, recursive=True) for a in args.scanfiles], [])
 
@@ -580,7 +697,8 @@ def main():
 
         # File handling and fallbacks
 
-        db.prune(purge=args.purge, keeppaths=image_paths)
+        if not args.noprune:
+            db.prune(purge=args.purge, keeppaths=image_paths)
 
         db.scanDirs(image_paths, recheck=args.recheck, hash_size=args.hashsize)
 
@@ -590,8 +708,11 @@ def main():
         remetaFiles(db, mock=args.mock, clobber=args.clobber)
 
     # Run commands as requested
-    if args.rename:
-        renameFiles(db, image_paths, mock=args.mock, clobber=args.clobber)
+    if args.renameDb:
+        renameFilesFromDb(db, mock=args.mock, clobber=args.clobber)
+
+    if args.renameFromPaths:
+        renameFilesFromPaths(image_paths, args.hashsize, mock=args.mock, clobber=args.clobber)
 
     if args.compare:
         magickCompareDuplicates(db)

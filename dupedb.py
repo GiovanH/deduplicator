@@ -87,7 +87,15 @@ def imageSize(filename):
         raise FileNotFoundError(filename)
     except OSError:
         print("WARNING! OS error with file: ", filename)
+        traceback.print_exc()
         return 0
+
+
+def getProcHash(file_path, hash_size):
+    if isImage(file_path):      
+        image = Image.open(file_path)
+        return str(imagehash.dhash(image, hash_size=hash_size))
+    return snip.hash.md5(file_path)
 
 
 class db():
@@ -103,7 +111,7 @@ class db():
         verbose (TYPE): Description
     """
     
-    def __init__(self, shelvefile, bad_words=[], debug=False, verbose=False, progressbar_allowed=True):
+    def __init__(self, shelvefile, bad_words=[], good_words=[], debug=False, verbose=False, progressbar_allowed=True):
         """Summary
         
         Args:
@@ -117,6 +125,7 @@ class db():
         self.shelvefile = shelvefile
 
         self.bad_words = bad_words
+        self.good_words = good_words
         self.debug = debug
         self.progressbar_allowed = progressbar_allowed
         self.verbose = verbose
@@ -155,7 +164,7 @@ class db():
                 print("Too many cache misses: only {:5}/{:5} hits".format((self.IScachetotal - self.IScachefails), self.IScachetotal))
                 ju.save(self.fsizecache, "sizes")
 
-            size = imageSize(filename, self.verbose)
+            size = imageSize(filename) if isImage(filename) else os.path.getsize(filename)
             self.fsizecache[h4sh] = size
             return size
 
@@ -188,19 +197,35 @@ class db():
             upper = x.upper()
             xtuple = (
                 -self.getMediaSize(x),  # Put full resolution images higher
+                -snip.av.framesInImage(x),
                 -upper.count("F:{s}".format(s=sep)),  # Put images in drive F higher.
+                -sum([upper.count(x.upper()) for x in self.good_words]),  # Put images with bad words higher
                 sum([upper.count(x.upper()) for x in self.bad_words]),  # Put images with bad words lower
                 # Put images in an exports folder lower
                 upper.count("{s}EXPORTS{s}".format(s=sep)),
                 # Put images with short folder paths higher
                 len(x[:x.rfind(sep)]),
                 upper.rfind("{s}IPAD{s}".format(s=sep)),  # Put images with iPad in the path lower
-                len(x)  # Put images with short total paths higher
+                -os.path.getsize(x)  # Put images with short total paths higher
             )
             if self.debug:
-                print(xtuple, x)
+                print(*xtuple, x, sep="\t\t")
             return xtuple
 
+        xtuple_key = [
+            "-Dimensions",
+            "-Frames\t",
+            "-In drive F",
+            "-Good words",
+            "+Bad words",
+            "+Exports",
+            "+Treelen",
+            "+Ipad\t",
+            "+Filesize\t"
+        ]
+
+        if self.debug:
+            print(*xtuple_key, sep="\t")
         st = sorted(filenames, key=sort)
         ju.save(self.fsizecache, "sizes")
         return st
@@ -285,16 +310,9 @@ class db():
 
             # load the image and compute the difference hash
             try:
-                if isVideo(image_path):
-                    proc_hash = snip.hash.md5(image_path)
-                elif not isImage(image_path):
-                    # print("Unrecognized file format:", image_path)
-                    return
-                else:            
-                    image = Image.open(image_path)
-                    proc_hash = str(imagehash.dhash(image, hash_size=hash_size))
-                    # Compress:
-                    # proc_hash = proc_hash.decode("hex").encode("base64")
+                proc_hash = getProcHash(image_path, hash_size)
+                # Compress:
+                # proc_hash = proc_hash.decode("hex").encode("base64")
 
             except FileNotFoundError:
                 print("WARNING! File not found: ", image_path)
@@ -347,7 +365,7 @@ class db():
         print("Fingerprinting {} images with hash size {}".format(num_images_to_fingerprint, hash_size))
         for (i, image_path_chunk) in enumerate(snip.data.chunk(images_to_fingerprint, chunk_size)):
             with ju.RotatingHandler(self.shelvefile, default=dict(), basepath="databases", readonly=False) as jdb:
-                with snip.loom.Spool(8, name="Fingerprint {}/{}".format(i + 1, total_chunks)) as fpSpool:
+                with snip.loom.Spool(10, name="Fingerprint {}/{}".format(i + 1, total_chunks)) as fpSpool:
                     for image_path in image_path_chunk:
                         fpSpool.enqueue(target=fingerprintImage, args=(jdb, image_path,))
 
