@@ -197,7 +197,7 @@ class db():
             upper = x.upper()
             xtuple = (
                 -self.getMediaSize(x),  # Put full resolution images higher
-                -snip.av.framesInImage(x),
+                -snip.image.framesInImage(x),
                 -upper.count("F:{s}".format(s=sep)),  # Put images in drive F higher.
                 -sum([upper.count(x.upper()) for x in self.good_words]),  # Put images with bad words higher
                 sum([upper.count(x.upper()) for x in self.bad_words]),  # Put images with bad words lower
