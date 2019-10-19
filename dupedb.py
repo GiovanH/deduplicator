@@ -24,6 +24,8 @@ from json.decoder import JSONDecodeError
 # import shelve           # Persistant data storage
 import snip.jfileutil as ju
 import snip
+import snip.image
+from snip.loom import Spool
 
 # Todo: Replace some sep formatting with os.path.join
 
@@ -196,36 +198,18 @@ class db():
             # Define our sort criteria.
             upper = x.upper()
             xtuple = (
-                -self.getMediaSize(x),  # Put full resolution images higher
-                -snip.image.framesInImage(x),
+                -snip.image.framesInImage(x),  # High frames good
+                -self.getMediaSize(x),  # High resolution good
                 -upper.count("F:{s}".format(s=sep)),  # Put images in drive F higher.
                 -sum([upper.count(x.upper()) for x in self.good_words]),  # Put images with bad words higher
                 sum([upper.count(x.upper()) for x in self.bad_words]),  # Put images with bad words lower
-                # Put images in an exports folder lower
-                upper.count("{s}EXPORTS{s}".format(s=sep)),
-                # Put images with short folder paths higher
-                len(x[:x.rfind(sep)]),
-                upper.rfind("{s}IPAD{s}".format(s=sep)),  # Put images with iPad in the path lower
-                -os.path.getsize(x)  # Put images with short total paths higher
+                len(x[:x.rfind(sep)]),  # Short paths good
+                -os.path.getsize(x)  # High filesize good
             )
             if self.debug:
                 print(*xtuple, x, sep="\t\t")
             return xtuple
 
-        xtuple_key = [
-            "-Dimensions",
-            "-Frames\t",
-            "-In drive F",
-            "-Good words",
-            "+Bad words",
-            "+Exports",
-            "+Treelen",
-            "+Ipad\t",
-            "+Filesize\t"
-        ]
-
-        if self.debug:
-            print(*xtuple_key, sep="\t")
         st = sorted(filenames, key=sort)
         ju.save(self.fsizecache, "sizes")
         return st
@@ -237,39 +221,30 @@ class db():
             dbentry.append(new)
             jdb[hash] = dbentry
 
-    def prune(self, show_pbar=True, purge=False, keeppaths=[]):
+    def prune(self, purge=False, keeppaths=[]):
         """Remove hashes without files.
         
         Args:
-            show_pbar (bool, optional): Description
             purge (bool, optional): Description
             paths (list, optional): Description
         """
         print("Removing dead hashes")
-        empties = []
-        
+
+        def _pruneKey(dictionary, key):
+            if purge:
+                for p in dictionary[key]:
+                    if not (p in keeppaths and os.path.isfile(p)):
+                        dictionary[key].remove(p)
+                        print("Removed path ", p)
+            if len(dictionary[key]) == 0:
+                dictionary.pop(key)
+                # print("Removed hash ", key)
+            return
+
         with ju.RotatingHandler(self.shelvefile, basepath="databases", readonly=False, default=dict()) as jdb:
-            for key in jdb.keys():
-                if purge:
-                    jdb[key] = [p for p in jdb.get(key) if (p in keeppaths) and os.path.isfile(p)]
-                if len(jdb.get(key)) == 0:
-                    empties.append(key)
-
-            pbar = None
-            if self.progressbar_allowed:
-                pbar = progressbar.ProgressBar(max_value=len(empties), redirect_stdout=True) if show_pbar else None
-            i = 0
-            for key in empties:
-                jdb.pop(key)
-                if pbar:
-                    i += 1
-                    pbar.update(i)
-                if self.verbose:
-                    print("Cleared key:", key)
-            if pbar:
-                pbar.finish()
-
-            ju.save(jdb, self.shelvefile, basepath="databases")
+            with Spool(24, "Cleanup") as spool:
+                for key in list(jdb.keys()):
+                    spool.enqueue(_pruneKey, (jdb, key,))
 
     def scanDirs(self, image_paths, recheck=False, hash_size=16):
         """Summary
@@ -321,22 +296,18 @@ class db():
             except ValueError:
                 print("WARNING! Error parsing image: ", image_path)
                 traceback.print_exc()
+                with open(f"badfiles_{self.shelvefile}.txt", "a", newline='\n') as shellfile:
+                    shellfile.write("{} \n".format(image_path))
+                    
                 return
             except OSError:
-                # traceback.print_exc(limit=2)
-                print("ERROR: File", image_path, "is corrupt or invalid.")
-                with open("badfiles.txt", "a", newline='\n') as shellfile:
-                    shellfile.write("{} \n".format(image_path))
-                # print("Trashing file.")
-                # try:
-                #     trash(image_path)
-                # except Exception:
-                #     print("...but it failed!")
-                #     traceback.print_exc(limit=1)
-                #     with open("forcedelete.sh", "a", newline='\n') as shellfile:
-                #         shellfile.write("rm -vf '{}' \n".format(image_path))
+                if os.path.isdir(image_path):
+                    return
 
-                #     pass  # Not a dealbreaker.
+                print("ERROR: File", image_path, "is corrupt or invalid.")
+                with open(f"badfiles_{self.shelvefile}.txt", "a", newline='\n') as shellfile:
+                    shellfile.write("{} \n".format(image_path))
+
                 return
 
             filename = image_path  # [image_path.rfind("/") + 1:]
@@ -350,7 +321,10 @@ class db():
                 db[proc_hash] = db.get(proc_hash, []) + [filename]
 
         # Reset forcedelete script
-        open("badfiles.txt", "w").close()
+        try:
+            os.unlink(f"badfiles_{self.shelvefile}.txt")
+        except FileNotFoundError:
+            pass
 
         # Only check needed images
         images_to_fingerprint = [image_path for image_path in image_paths if (image_path not in known_paths) or recheck]
