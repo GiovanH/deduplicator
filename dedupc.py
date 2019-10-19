@@ -338,7 +338,8 @@ def getDuplicatesToDelete(db, interactive=False):
             filestodelete += goingtodelete
 
             # And explain ourselves.
-            print_info("\n\t* " + goingtokeep, *["\n\t  " + f for f in goingtodelete])
+            explanation = "\n\t" + "\n\t".join(["+ " + goingtokeep] + ["- " + f for f in goingtodelete])
+            print_info(explanation)
         return filestodelete
 
 
@@ -426,7 +427,7 @@ def remetaFiles(db, mock=True, clobber=False):
                 im.save(old_path, exif=exif_bytes)
             else:
                 pass
-        except Exception as e:
+        except Exception:
             print_err(traceback.format_exc())
 
     print_info("Setting EXIF metadata")
@@ -467,7 +468,7 @@ def processRenameOperation(old_path, new_name, bundled_hash, successful_operatio
 
     try:
         snip.filesystem.moveFileToFile(old_path, new_path, clobber=False)
-    except FileExistsError as e:
+    except FileExistsError:
         # Implement our own clobber behavior
         if clobber:
             # Trash existing, then replace.
@@ -646,7 +647,6 @@ def parse_args():
         "--clobber",
         help="Allow overwriting files during rename.", action="store_true")
 
-
     ap.add_argument(
         "-l", "--list", action="store_true",
         help="Show duplicate information on screen.")
@@ -692,7 +692,7 @@ def main():
 
     # Scan directories for files and populate database
     if args.scanfiles:
-        print_debug("Crawling for files...")
+        print_debug("Building filelists")
         # print(args.files)
         _image_paths = sum([glob.glob(a, recursive=True) for a in args.scanfiles], [])
 
