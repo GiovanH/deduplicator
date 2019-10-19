@@ -95,7 +95,7 @@ def getProcHash(file_path, hash_size):
     if isImage(file_path):      
         image = Image.open(file_path)
         return str(imagehash.dhash(image, hash_size=hash_size))
-    return snip.hash.md5(file_path)
+    return snip.hash.md5file(file_path)
 
 
 class db():
@@ -147,7 +147,7 @@ class db():
         Returns:
             TYPE: Description
         """
-        h4sh = snip.hash.md5(filename)
+        h4sh = snip.hash.md5file(filename)
         hit = self.fsizecache.get(h4sh)
         self.IScachetotal
         self.IScachefails
