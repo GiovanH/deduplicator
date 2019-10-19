@@ -93,6 +93,8 @@ def deleteFiles(filestodelete):
 
 
 def magickCompareDuplicates(db):
+    print("Compare depreciated; use compare.py instead")
+    return
     """Use imagemagick to generate comparisons.
 
     Args:
@@ -112,10 +114,6 @@ def magickCompareDuplicates(db):
             triggerFile.write("\n rm -v {}".format(" ".join('"{}"'.format(filename) for filename in sortedFilenames[1:])))
             triggerFile.write("\n\nrm -v ./{}*.jpg".format(bundled_hash))
             triggerFile.write("\nrm -v ./{}_pullTrigger.sh".format(bundled_hash))
-
-    # Make directories
-    for destfldr in [db.shelvefile + "_sizediff", db.shelvefile]:
-        os.makedirs("./comparison/{}/".format(destfldr), exist_ok=True)
 
     def processMagickAction(sortedFilenames, bundled_hash):
         """Summary
@@ -137,81 +135,93 @@ def magickCompareDuplicates(db):
         else:
             destfldr = db.shelvefile
 
-        os.makedirs("./comparison/{}/".format(destfldr), exist_ok=True)
+        try:
+            if sizediff:
+                # try:
+                runMagickCommand(destfldr, "montage -mode concatenate", None, "compare_!montage", sortedFilenames, bundled_hash)
+                writeTriggerFile(destfldr, sortedFilenames, bundled_hash)
+                # except subprocess.CalledProcessError as e:
+                #     pass
+                # montage -label %i
+            else:
+                # TODO: Detect color!
+                # try:
+                runMagickCommand(destfldr, "montage -mode concatenate", None, "compare_!montage", sortedFilenames, bundled_hash)
+                runMagickCommand(destfldr, "compare -fuzz 10%% -compose src -highlight-color Black -lowlight-color White", None, "compare", sortedFilenames, bundled_hash)
+                writeTriggerFile(destfldr, sortedFilenames, bundled_hash)
+                # except subprocess.CalledProcessError as e:
+                #     pass
+        except UnicodeEncodeError:
+            print(sortedFilenames)
+            traceback.print_exc()
 
-        if sizediff:
-            # try:
-            runMagickCommand(destfldr, "montage -mode concatenate", None, "compare_!montage", sortedFilenames, bundled_hash)
-            writeTriggerFile(destfldr, sortedFilenames, bundled_hash)
-            # except subprocess.CalledProcessError as e:
-            #     pass
-            # montage -label %i
-        else:
-            # TODO: Detect color!
-            # try:
-            runMagickCommand(destfldr, "montage -mode concatenate", None, "compare_!montage", sortedFilenames, bundled_hash)
-            runMagickCommand(destfldr, "compare -fuzz 10%% -compose src -highlight-color Black -lowlight-color White", None, "compare", sortedFilenames, bundled_hash)
-            writeTriggerFile(destfldr, sortedFilenames, bundled_hash)
-            # except subprocess.CalledProcessError as e:
-            #     pass
+    # print_info("Removing orphaned comparison files")
+    # for expected_images, destfldr in [(1, db.shelvefile + "_sizediff"), (2, db.shelvefile)]:
 
-    print_info("Removing orphaned comparison files")
-    for expected_images, destfldr in [(1, db.shelvefile + "_sizediff"), (2, db.shelvefile)]:
+    #     with snip.loom.Spool(4, name="Trash") as trashSpool:
 
-        with snip.loom.Spool(4, name="Trash") as trashSpool:
+    #         # Shell files
+    #         for sh in glob.glob(".\\comparison\\{d}\\*.sh".format(d=destfldr)):
+    #             sh_hash = sh.split("\\")[-1].split("_")[0]
+    #             hashs_images = glob.glob(".\\comparison\\{d}\\{h}_compare*.jpg".format(d=destfldr, h=sh_hash))
+    #             if len(hashs_images) != expected_images:
+    #                 print_err("Shell file", sh_hash, "missing images", sh)
+    #                 trashSpool.enqueue(target=trash, args=(sh,))
 
-            # Shell files
-            for sh in glob.glob(".\\comparison\\{d}\\*.sh".format(d=destfldr)):
-                sh_hash = sh.split("\\")[-1].split("_")[0]
-                hashs_images = glob.glob(".\\comparison\\{d}\\{h}_compare*.jpg".format(d=destfldr, h=sh_hash))
-                if len(hashs_images) != expected_images:
-                    print_err("Shell file", sh_hash, "missing images", sh)
-                    trashSpool.enqueue(target=trash, args=(sh,))
+    #         # Image files
+    #         for imgfil in glob.glob(".\\comparison\\{d}\\*.jpg".format(d=destfldr)):
+    #             imgfil_hash = imgfil.split("\\")[-1].split("_")[0]
+    #             hashs_images_glob = ".\\comparison\\{d}\\{h}_compare*.jpg".format(d=destfldr, h=imgfil_hash)
+    #             hashs_images = glob.glob(hashs_images_glob)
 
-            # Image files
-            for imgfil in glob.glob(".\\comparison\\{d}\\*.jpg".format(d=destfldr)):
-                imgfil_hash = imgfil.split("\\")[-1].split("_")[0]
-                hashs_images_glob = ".\\comparison\\{d}\\{h}_compare*.jpg".format(d=destfldr, h=imgfil_hash)
-                hashs_images = glob.glob(hashs_images_glob)
+    #             triggerfile_title = "{}_pullTrigger.sh".format(imgfil_hash)
+    #             shfil = ".\\comparison\\{d}\\{t}".format(d=destfldr, t=triggerfile_title)
 
-                triggerfile_title = "{}_pullTrigger.sh".format(imgfil_hash)
-                shfil = ".\\comparison\\{d}\\{t}".format(d=destfldr, t=triggerfile_title)
-
-                if not (len(hashs_images) == expected_images):
-                    print_err("Image", imgfil, "missing neighbors.")
-                    print_debug(hashs_images_glob)
-                    print_debug(hashs_images)
-                    print("")
-                elif not os.path.isfile(shfil):
-                    print_err("Image", imgfil, "missing shell file: ", shfil)
-                else:
-                    continue
-                for file in filter(os.path.isfile, hashs_images):
-                    trashSpool.enqueue(target=trash, args=(file,))
-                    pass
-            trashSpool.finish(resume=True)
+    #             if not (len(hashs_images) == expected_images):
+    #                 print_err("Image", imgfil, "missing neighbors.")
+    #                 print_debug(hashs_images_glob)
+    #                 print_debug(hashs_images)
+    #                 print("")
+    #             elif not os.path.isfile(shfil):
+    #                 print_err("Image", imgfil, "missing shell file: ", shfil)
+    #             else:
+    #                 continue
+    #             for file in filter(os.path.isfile, hashs_images):
+    #                 trashSpool.enqueue(target=trash, args=(file,))
+    #                 pass
+    #         trashSpool.finish(resume=True)
 
     print_info("Running comparisons.")
+    made_directories = False
     with snip.loom.Spool(1, name="Magick") as magickSpool:
         for (sortedFilenames, bundled_hash) in db.generateDuplicateFilelists(bundleHash=True, threshhold=2):
+
+            if not made_directories:
+                # Make directories
+                for destfldr in [db.shelvefile + "_sizediff", db.shelvefile]:
+                    os.makedirs("./comparison/{}/".format(destfldr), exist_ok=True)
+                    for existing_file in glob.glob("./comparison/{}/*".format(destfldr)):
+                        os.unlink(existing_file)
+                made_directories = True
+
             magickSpool.enqueue(target=processMagickAction, args=(sortedFilenames, bundled_hash,))
         magickSpool.setQuota(5)  # Widen
 
-    for destfldr in [db.shelvefile + "_sizediff", db.shelvefile]:
-
-        # Write allfiles pulltrigger
-        print_info("Writing XXX_ALLFILES")
-        with open("./comparison/{}/XXX_ALLFILES_pullTrigger_.sh".format(destfldr), "w", newline='\n') as triggerFile:
-            triggerFile.write("#!/bin/bash")
-            triggerFile.write(
-                """\n
-for trigger in *_pullTrigger.sh; do
-\techo $trigger
-\tbash $trigger
-\trm -v $trigger 2>/dev/null
-done
-""")
-            triggerFile.write("\nrm -v ./XXX_ALLFILES_pullTrigger.sh")
+    if made_directories:
+        for destfldr in [db.shelvefile + "_sizediff", db.shelvefile]:
+            # Write allfiles pulltrigger
+            print_info("Writing XXX_ALLFILES")
+            with open("./comparison/{}/XXX_ALLFILES_pullTrigger_.sh".format(destfldr), "w", newline='\n') as triggerFile:
+                triggerFile.write("#!/bin/bash")
+                triggerFile.write(
+                    """\n
+    for trigger in *_pullTrigger.sh; do
+    \techo $trigger
+    \tbash $trigger
+    \trm -v $trigger 2>/dev/null
+    done
+    """)
+                triggerFile.write("\nrm -v ./XXX_ALLFILES_pullTrigger.sh")
 
 
 def runMagickCommand(shelvefile, precmd, midcmd, fileact, sortedFilenames, bundled_hash):
@@ -259,7 +269,7 @@ def runMagickCommand(shelvefile, precmd, midcmd, fileact, sortedFilenames, bundl
             print_err("ERR:", bytes(result.stderr).decode("unicode_escape"))
         except UnicodeDecodeError:
             print_err(result.stderr)
-        raise subprocess.CalledProcessError(result.returncode, command, result)
+        # raise subprocess.CalledProcessError(result.returncode, command, result).
 
 
 def getDuplicatesToDelete(db, interactive=False):
