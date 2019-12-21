@@ -10,7 +10,6 @@ from tkinter.simpledialog import Dialog
 from PIL import Image
 from tkinter import ttk
 
-from send2trash import send2trash
 import snip
 
 import traceback
@@ -40,8 +39,7 @@ def parse_args():
     ap = argparse.ArgumentParser()
 
     ap.add_argument(
-        "-s", "--shelvefile",
-        required=True, help="Database name")
+        "shelvefile", help="Database name")
     ap.add_argument(
         "-l", "--list", action="store_true",
         help="Show duplicate information on screen.")
@@ -108,9 +106,15 @@ class ReplaceDialog(Dialog):
         target = self.picker_target.get()
 
         snip.filesystem.copyFileToDir(source, "undo", clobber=True)
-        snip.filesystem.copyFileToDir(target, "undo", clobber=True)
+        try:
+            # Target doesn't have to exist
+            snip.filesystem.copyFileToDir(target, "undo", clobber=True)
+        except FileNotFoundError:
+            pass
         snip.filesystem.moveFileToFile(source, target, clobber=True)
 
+        if target not in self.parent.duplicates[self.parent.current_hash]:
+            self.parent.duplicates[self.parent.current_hash].append(target)
         self.parent.canvas.markCacheDirty(source)
         self.parent.canvas.markCacheDirty(target)
 
@@ -120,7 +124,31 @@ class MainWindow(tk.Tk):
         super().__init__(*args, **kwargs)
         args = parse_args()
 
-        self.db = dupedb.db(args.shelvefile, debug=args.debug, verbose=args.verbose)
+        self.initwindow()
+
+        if not args.shelvefile:
+            self.pick_and_open_shelvefile()
+        else:
+            self.open_shelvefile(args.shelvefile)
+
+        # self.load_thread = threading.Thread(target=self.loadDuplicates)
+        # self.load_thread.start()
+
+        self.mainloop()
+
+    def pick_and_open_shelvevfile(self):
+        self.open_shelvefile(
+            os.path.splitext(
+                os.path.split(
+                    filedialog.askopenfilename()
+                )[-1]
+            )[0]
+        )
+
+    def open_shelvefile(self, shelvefile):
+        if not shelvefile:
+            return
+        self.db = dupedb.db(shelvefile, bad_words=["Unsorted"], good_words=["Keep"])
 
         self.current_hash = ""
 
@@ -131,13 +159,7 @@ class MainWindow(tk.Tk):
         self.photoImageCache = {}
         self.current_filelist = []
 
-        self.initwindow()
-
         self.loadDuplicates()
-        # self.load_thread = threading.Thread(target=self.loadDuplicates)
-        # self.load_thread.start()
-
-        self.mainloop()
 
     def initwindow(self):
 
@@ -145,6 +167,9 @@ class MainWindow(tk.Tk):
 
         self.infobox = tk.Label(self)
         self.infobox.grid(column=1, row=0, sticky="ew")
+
+        self.file_picker = tk.Frame(self, relief=tk.GROOVE)
+        self.file_picker.grid(column=1, row=1, sticky="nsw")
 
         self.canvas = ContentCanvas(self, takefocus=True)
         self.canvas.grid(column=1, row=2, sticky="nsew")
@@ -157,13 +182,11 @@ class MainWindow(tk.Tk):
         self.bind("<Up>", self.prevImage)
 
         self.bind("<d>", self.on_btn_delete)
+        self.bind("<a>", self.on_btn_undo)
         self.bind("<r>", self.on_btn_replace)
         self.bind("<c>", self.on_btn_concat)
 
         self.canvas.focus()
-
-        self.file_picker = tk.Frame(self, relief=tk.GROOVE)
-        self.file_picker.grid(column=0, row=1, columnspan=2, sticky="ns")
 
         self.toolbar = tk.Frame(self)
         self.toolbar.grid(column=0, row=0, rowspan=3, sticky="ns")
@@ -180,24 +203,28 @@ class MainWindow(tk.Tk):
         self.hash_picker.bind("<<ComboboxSelected>>", self.onHashSelect)
         self.hash_picker.grid(column=0, row=rowInOrder(), sticky="ew")
 
+        btn_open = ttk.Button(self.toolbar, text="Open", takefocus=False, command=self.pick_and_open_shelvevfile)
         btn_delete = ttk.Button(self.toolbar, text="Delete", takefocus=False, command=self.on_btn_delete)
         btn_replace = ttk.Button(self.toolbar, text="Replace", takefocus=False, command=self.on_btn_replace)
         btn_concat = ttk.Button(self.toolbar, text="Concatenate", takefocus=False, command=self.on_btn_concat)
 
-        for btn in [btn_delete, btn_replace, btn_concat]:
+        self.var_progbar_prog = tk.IntVar()
+        self.progbar_prog = ttk.Progressbar(self.toolbar, variable=self.var_progbar_prog)
+
+        for btn in [btn_open, btn_delete, btn_replace, btn_concat, self.progbar_prog]:
             btn.grid(row=rowInOrder(), sticky="ew")
 
     def update_infobox(self):
         filepath = self.current_file.get()
-
+        filename = os.path.split(filepath)[1]
+        filesize = snip.strings.bytes_to_string(os.path.getsize(filepath))
         try:
             frames = snip.image.framesInImage(filepath)
-            filename = os.path.split(filepath)[1]
-            filesize = snip.strings.bytes_to_string(os.path.getsize(filepath))
             w, h = Image.open(filepath).size
             newtext = f"{filename} [{frames}f]\n{filesize} [{w}x{h}px]"
         except Exception:
-            newtext = "Error"
+            newtext = f"{filename} \n{filesize}"
+            # traceback.print_exc()
         self.infobox.configure(text=newtext)
 
     # Navigate
@@ -227,11 +254,15 @@ class MainWindow(tk.Tk):
         self.onHashSelect()
 
     # Process actions
+    def on_btn_undo(self, event=None):
+        undopath = TRASH.undo()
+        if undopath:
+            self.canvas.markCacheDirty(undopath)
+        self.onHashSelect()
 
     def on_btn_delete(self, event=None):
         filepath = self.current_file.get()
-        send2trash(filepath)
-        print("Delete", filepath)
+        TRASH.delete(filepath)
         self.canvas.markCacheDirty(filepath)
         self.onHashSelect()
 
@@ -270,6 +301,9 @@ class MainWindow(tk.Tk):
 
         self.hash_picker.configure(values=list(self.duplicates.keys()))
         self.hash_picker.current(0)
+
+        # self.var_progbar_prog.set(len(list(self.duplicates.keys())))
+        self.progbar_prog.configure(maximum=len(list(self.duplicates.keys())))
         self.onHashSelect()
 
     def onFileSelect(self, *args):
@@ -280,13 +314,14 @@ class MainWindow(tk.Tk):
 
     def onHashSelect(self, *args):
         self.current_hash = self.hash_picker.get()
+        self.var_progbar_prog.set(self.hash_picker.current())
         # print("Switch hash", new_hash)
 
         for widget in self.file_picker.winfo_children():
             widget.destroy()
 
         set_first_file = True
-        self.current_filelist = list(filter(os.path.isfile, self.duplicates[self.current_hash]))
+        self.current_filelist = list(filter(TRASH.isfile, self.duplicates[self.current_hash]))
         # self.listbox_images.delete(0, self.listbox_images.size())
         for filename in self.current_filelist:
             tk.Radiobutton(
@@ -301,13 +336,11 @@ class MainWindow(tk.Tk):
                 set_first_file = False
 
 
-def main():
-    MainWindow()
-
-
 if __name__ == "__main__":
     try:
-        main()
+        global TRASH
+        with snip.filesystem.Trash(verbose=True) as TRASH:
+            MainWindow()
     except KeyboardInterrupt:
         traceback.print_exc()
         raise
