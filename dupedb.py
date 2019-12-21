@@ -94,10 +94,19 @@ def imageSize(filename):
 
 
 def getProcHash(file_path, hash_size):
-    if isImage(file_path):      
-        image = Image.open(file_path)
+    if isImage(file_path) or isVideo(file_path):
+        if isImage(file_path):      
+            image = Image.open(file_path)
+        else:
+            import cv2
+            capture = cv2.VideoCapture(file_path)
+            capture.grab()
+            flag, frame = capture.retrieve()
+            frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            image = Image.fromarray(frame)
         return str(imagehash.dhash(image, hash_size=hash_size))
-    return snip.hash.md5file(file_path)
+    else:
+        return snip.hash.md5file(file_path)
 
 
 class db():
