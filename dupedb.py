@@ -85,10 +85,10 @@ def imageSize(filename):
     except Image.DecompressionBombError:
         return Image.MAX_IMAGE_PIXELS
     except FileNotFoundError:
-        print("WARNING! File not found: ", filename)
+        print("WARNING! File not found: " + filename)
         raise FileNotFoundError(filename)
     except OSError:
-        print("WARNING! OS error with file: ", filename)
+        print("WARNING! OS error with file: " + filename)
         traceback.print_exc()
         return 0
 
@@ -107,6 +107,20 @@ def getProcHash(file_path, hash_size):
         return str(imagehash.dhash(image, hash_size=hash_size))
     else:
         return snip.hash.md5file(file_path)
+
+
+def makeSortTuple(x, good_words=[], bad_words=[]):
+    upper = x.upper()
+    return (
+        -snip.image.framesInImage(x),  # High frames good
+        -(imageSize(x) if isImage(x) else os.path.getsize(x)),  # High resolution good
+        -upper.count("F:{s}".format(s=sep)),  # Put images in drive F higher.
+        -sum([upper.count(x.upper()) for x in good_words]),  # Put images with bad words higher
+        +sum([upper.count(x.upper()) for x in bad_words]),  # Put images with bad words lower
+        -len(x[:x.rfind(sep)]),  # Deep paths good
+        +os.path.getsize(x),  # Low filesize good (if resolution is the same!)
+        -len(x)  # Longer length filename better
+    )
 
 
 class db():
@@ -196,30 +210,9 @@ class db():
 
         # Sorting key
         def sort(x):
-            """Summary
-            
-            Args:
-                x (TYPE): Description
-            
-            Returns:
-                TYPE: Description
-            """
-            # Define our sort criteria.
-            upper = x.upper()
-            xtuple = (
-                -snip.image.framesInImage(x),  # High frames good
-                -self.getMediaSize(x),  # High resolution good
-                -upper.count("F:{s}".format(s=sep)),  # Put images in drive F higher.
-                -sum([upper.count(x.upper()) for x in self.good_words]),  # Put images with bad words higher
-                sum([upper.count(x.upper()) for x in self.bad_words]),  # Put images with bad words lower
-                len(x[:x.rfind(sep)]),  # Short paths good
-                -os.path.getsize(x)  # High filesize good
-            )
-            if self.debug:
-                print(*xtuple, x, sep="\t\t")
-            return xtuple
+            return makeSortTuple(x, self.good_words, self.bad_words)
 
-        st = sorted(filenames, key=sort)
+        st = sorted(filter(os.path.isfile, filenames), key=sort)
         ju.save(self.fsizecache, "sizes")
         return st
 
@@ -231,29 +224,36 @@ class db():
             jdb[hash] = dbentry
 
     def prune(self, purge=False, keeppaths=[]):
-        """Remove hashes without files.
+        """Remove hashes without files and files that no longer exist
         
         Args:
             purge (bool, optional): Description
             paths (list, optional): Description
         """
-        print("Removing dead hashes")
+        print("Cleaning and verifying database")
 
         def _pruneKey(dictionary, key):
+            # Remove files that no longer exist
+            dictionary[key] = list(filter(os.path.isfile, dictionary[key]))
+
+            # If purge, remove files that are not in our search parameters
             if purge:
-                for p in dictionary[key]:
-                    if not (p in keeppaths and os.path.isfile(p)):
-                        dictionary[key].remove(p)
-                        print("Removed path ", p)
+                dictionary[key] = list(filter(lambda p: p in keeppaths, dictionary[key]))
+
+            # Remove duplicate filenames
+            dictionary[key] = list(set(dictionary[key]))
+
+            # Remove hashes with no files
             if len(dictionary[key]) == 0:
                 dictionary.pop(key)
-                # print("Removed hash ", key)
+
             return
 
         with ju.RotatingHandler(self.shelvefile, basepath="databases", readonly=False, default=dict()) as jdb:
-            with Spool(24, "Cleanup") as spool:
+            with Spool(80, "Cleanup") as spool:
                 for key in list(jdb.keys()):
                     spool.enqueue(_pruneKey, (jdb, key,))
+                spool.finish()
 
     def scanDirs(self, image_paths, recheck=False, hash_size=16):
         """Summary
@@ -336,7 +336,10 @@ class db():
             pass
 
         # Only check needed images
-        images_to_fingerprint = [image_path for image_path in image_paths if (image_path not in known_paths) or recheck]
+        images_to_fingerprint = [
+            image_path for image_path in image_paths 
+            if (image_path not in known_paths) or recheck
+        ]
         
         # Progress and chunking
         num_images_to_fingerprint = len(images_to_fingerprint)
@@ -367,7 +370,7 @@ class db():
         """
         print("Generating information about duplicate images from database")
 
-        with ju.RotatingHandler(self.shelvefile, basepath="databases", readonly=False) as db:
+        with ju.RotatingHandler(self.shelvefile, basepath="databases", readonly=True) as db:
 
             pbar = None
             if self.progressbar_allowed:
@@ -379,29 +382,17 @@ class db():
                     i += 1
                     pbar.update(i)
 
-                # For each hash `h` and the list of filenames with that hash `filenames`:
-                filenames = db[h]
-                # filenames = [filepath for filepath in db[h] if os.path.isfile(filepath)]
-
                 # Remove duplicate filenames
-                if len(set(filenames)) < len(filenames):
-                    print("Duplicate file names detected in hash {}, cleaning.".format(h))
-                    db[h] = filenames = list(set(filenames))
-                    # = freshening[h]
+                filenames = db[h]
+                db[h] = filenames = list(set(filenames))
+
                 # Verify that all these files exist.
-                missing_files = []
-                for filepath in (f for f in filenames if not os.path.isfile(f)):
-                        missing_files.append(filepath)
-                    # else:
-                    #     if DEBUG_FILE_EXISTS:
-                    #         print("GOOD {}".format(filepath))
+                # missing_files = []
+                # for filepath in (f for f in filenames if not os.path.isfile(f)):
+                #     missing_files.append(filepath)
 
-                for filepath in missing_files:
-                    filenames.remove(filepath)
-
-                # if DEBUG_FILE_EXISTS:
-                #     for filepath in filenames:
-                #         assert os.path.isfile(filepath), filepath
+                # for filepath in missing_files:
+                #     filenames.remove(filepath)
 
                 # If there is STILL more than one file with the hash:
                 if sort and len(filenames) >= threshhold:
