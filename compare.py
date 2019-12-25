@@ -301,8 +301,6 @@ class MainWindow(tk.Tk):
 
         self.hash_picker.configure(values=list(self.duplicates.keys()))
         self.hash_picker.current(0)
-
-        # self.var_progbar_prog.set(len(list(self.duplicates.keys())))
         self.progbar_prog.configure(maximum=len(list(self.duplicates.keys())))
         self.onHashSelect()
 
