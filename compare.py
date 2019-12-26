@@ -77,24 +77,30 @@ class Preloader(tk.Frame):
 
 class ReplaceDialog(Dialog):
 
+    def __init__(self, parent, hash, filelist, onDoOpCallback):
+        self.filelist = filelist
+        self.onDoOp = onDoOpCallback
+        self.hash = hash
+        super().__init__(parent=parent)
+
     def body(self, master):
 
-        print(self.parent.current_filelist)
+        print(self.filelist)
 
-        maxindex = len(self.parent.current_filelist) - 1
+        maxindex = len(self.filelist) - 1
 
         tk.Label(master, text="Source:").grid(column=0, row=0)
-        self.picker_source = ttk.Combobox(master, values=self.parent.current_filelist)
+        self.picker_source = ttk.Combobox(master, values=self.filelist)
         self.picker_source.grid(column=1, row=0, sticky="ew")
         self.picker_source.current(min(0, maxindex))
         self.picker_source.focus()
 
         tk.Label(master, text="Target:").grid(column=0, row=1)
-        self.picker_target = ttk.Combobox(master, values=self.parent.current_filelist)
+        self.picker_target = ttk.Combobox(master, values=self.filelist)
         self.picker_target.grid(column=1, row=1, sticky="ew")
         self.picker_target.current(min(1, maxindex))
 
-        text_width = max(len(text) for text in self.parent.current_filelist)
+        text_width = max(len(text) for text in self.filelist)
         self.picker_target.config(width=text_width)
         self.picker_source.config(width=text_width)
 
