@@ -144,7 +144,7 @@ class MainWindow(tk.Tk):
 
         self.mainloop()
 
-    def pick_and_open_shelvevfile(self):
+    def pick_and_open_shelvefile(self):
         self.open_shelvefile(
             os.path.splitext(
                 os.path.split(
@@ -158,6 +158,7 @@ class MainWindow(tk.Tk):
             self.duplicates[hash].append(target)
         self.canvas.markCacheDirty(source)
         self.canvas.markCacheDirty(target)
+
     def open_shelvefile(self, shelvefile):
         if not shelvefile:
             return
@@ -216,7 +217,7 @@ class MainWindow(tk.Tk):
         self.hash_picker.bind("<<ComboboxSelected>>", self.onHashSelect)
         self.hash_picker.grid(column=0, row=rowInOrder(), sticky="ew")
 
-        btn_open = ttk.Button(self.toolbar, text="Open", takefocus=False, command=self.pick_and_open_shelvevfile)
+        btn_open = ttk.Button(self.toolbar, text="Open", takefocus=False, command=self.pick_and_open_shelvefile)
         btn_delete = ttk.Button(self.toolbar, text="Delete", takefocus=False, command=self.on_btn_delete)
         btn_replace = ttk.Button(self.toolbar, text="Replace", takefocus=False, command=self.on_btn_replace)
         btn_concat = ttk.Button(self.toolbar, text="Concatenate", takefocus=False, command=self.on_btn_concat)
