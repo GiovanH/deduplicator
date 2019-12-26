@@ -111,18 +111,20 @@ class ReplaceDialog(Dialog):
         source = self.picker_source.get()
         target = self.picker_target.get()
 
+        assert not os.path.isdir(source)
+
         snip.filesystem.copyFileToDir(source, "undo", clobber=True)
         try:
             # Target doesn't have to exist
             snip.filesystem.copyFileToDir(target, "undo", clobber=True)
         except FileNotFoundError:
             pass
-        snip.filesystem.moveFileToFile(source, target, clobber=True)
 
-        if target not in self.parent.duplicates[self.parent.current_hash]:
-            self.parent.duplicates[self.parent.current_hash].append(target)
-        self.parent.canvas.markCacheDirty(source)
-        self.parent.canvas.markCacheDirty(target)
+        if os.path.isdir(target):
+            snip.filesystem.moveFileToDir(source, target, clobber=True)
+        else:
+            snip.filesystem.moveFileToFile(source, target, clobber=True)
+        self.onDoOp(self.hash, source, target)
 
 
 class MainWindow(tk.Tk):
@@ -151,6 +153,11 @@ class MainWindow(tk.Tk):
             )[0]
         )
 
+    def refreshAfterOp(self, hash, source, target):
+        if target not in self.duplicates[self.current_hash]:
+            self.duplicates[hash].append(target)
+        self.canvas.markCacheDirty(source)
+        self.canvas.markCacheDirty(target)
     def open_shelvefile(self, shelvefile):
         if not shelvefile:
             return
@@ -273,7 +280,14 @@ class MainWindow(tk.Tk):
         self.onHashSelect()
 
     def on_btn_replace(self, event=None):
-        ReplaceDialog(self)
+        permutations = [
+            os.path.join(
+                os.path.dirname(p), 
+                os.path.splitext(p)[0] + "-alt" + os.path.splitext(p)[1]
+            ) for p in self.current_filelist
+        ]
+        filelist = self.current_filelist + permutations        
+        ReplaceDialog(self, self.current_hash, filelist, self.refreshAfterOp)
         self.onHashSelect()
         self.after(20, self.canvas.focus)
 
@@ -325,6 +339,7 @@ class MainWindow(tk.Tk):
             widget.destroy()
 
         set_first_file = True
+        self.current_file.set(None)
         self.current_filelist = list(filter(TRASH.isfile, self.duplicates[self.current_hash]))
         # self.listbox_images.delete(0, self.listbox_images.size())
         for filename in self.current_filelist:
