@@ -340,7 +340,7 @@ class MainWindow(tk.Tk):
             widget.destroy()
 
         set_first_file = True
-        self.current_file.set(None)
+        self.current_file.set("")
         self.current_filelist = list(filter(TRASH.isfile, self.duplicates[self.current_hash]))
         # self.listbox_images.delete(0, self.listbox_images.size())
         for filename in self.current_filelist:
