@@ -11,7 +11,7 @@ import snip
 
 import traceback
 from PIL import Image
-
+import snip.filesystem
 import dupedb
 
 SHELVE_FILE_EXTENSIONS = ["json"]
@@ -46,50 +46,15 @@ def print_err(*args, **kwargs):
     return print_colored(colorama.Fore.RED, *args, **kwargs)
 
 
-def trash(file, verbose=True):
-    """Send a file to trash.
-
-    Args:
-        file (str): Path to a file
-        verbose (bool, optional)
-    """
-    assert os.path.isfile(file)  # We are asked to delete a real file.
-    try:
-        send2trash(file)
-        if verbose:
-            print_io("{} -> [TRASH]".format(file))
-    except (PermissionError, FileNotFoundError) as e:
-        if not os.path.isfile(file):
-            # Well, the file's gone, anyway.
-            print_warn("TRASH ODDITY: {}".format(file))
-            return
-        # The file is still here.
-
-        if isinstance(e, FileNotFoundError):
-            print_err("TRASH FAILED: {} (Not found)".format(file))
-
-        os.unlink(file)
-        if not os.path.isfile(file):
-            raise
-
-
 def deleteFiles(filestodelete):
     """Trash multiple files
 
     Args:
         filestodelete (list): File paths to delete
     """
-    print_info("Deleting files")
-    if len(filestodelete) > 0:
-        delete_spool = snip.loom.Spool(20)
-        for file in filestodelete:
-            delete_spool.enqueue(
-                name="trash {}".format(file),
-                target=trash, args=(file,)
-            )
-        # Cleanup
-        delete_spool.finish()
-        print_info("Finished.")
+    with snip.filesystem.Trash() as trash:
+        for path in filestodelete:
+            trash.delete(path)
 
 
 def magickCompareDuplicates(db):
@@ -472,7 +437,8 @@ def processRenameOperation(old_path, new_name, bundled_hash, successful_operatio
         # Implement our own clobber behavior
         if clobber:
             # Trash existing, then replace.
-            trash(new_path)
+            with snip.filesystem.Trash() as trash:
+                trash.delete(new_path)
             snip.filesystem.moveFileToFile(old_path, new_path, clobber=False)
     successful_operations.append((old_path, new_path, bundled_hash,))
 
