@@ -157,11 +157,11 @@ class db():
 
         self.IScachetotal = self.IScachefails = 0
 
-        try:
-            self.fsizecache = ju.load("sizes", default=dict())
-        except JSONDecodeError:
-            print("Bad fscache file, resetting. ")
-            self.fsizecache = dict() 
+        # try:
+        #     self.fsizecache = ju.load("sizes", default=dict())
+        # except JSONDecodeError:
+        #     print("Bad fscache file, resetting. ")
+        self.fsizecache = dict() 
 
     def getMediaSize(self, filename):
         """Summary
@@ -174,20 +174,16 @@ class db():
         """
         h4sh = snip.hash.md5file(filename)
         hit = self.fsizecache.get(h4sh)
-        self.IScachetotal
-        self.IScachefails
-        self.IScachetotal += 1
+        # self.IScachetotal
+        # self.IScachefails
+        # self.IScachetotal += 1
         if hit:
-            if self.verbose:
-                print("H {:5}/{:5}".format((self.IScachetotal - self.IScachefails), self.IScachetotal))
             return hit
         else:
-            if self.verbose:
-                print("F {:5}/{:5}".format((self.IScachetotal - self.IScachefails), self.IScachetotal))
             self.IScachefails += 1
             if self.IScachefails % 8000 == 0:
                 print("Too many cache misses: only {:5}/{:5} hits".format((self.IScachetotal - self.IScachefails), self.IScachetotal))
-                ju.save(self.fsizecache, "sizes")
+                # ju.save(self.fsizecache, "sizes")
 
             size = imageSize(filename) if isImage(filename) else os.path.getsize(filename)
             self.fsizecache[h4sh] = size
