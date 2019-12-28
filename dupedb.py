@@ -19,7 +19,8 @@ import os.path          # isfile() method
 import traceback
 from PIL import Image   # Image IO libraries
 from os import sep
-from json.decoder import JSONDecodeError
+# from json.decoder import JSONDecodeError
+from cv2 import error as cv2_error
 
 # import shelve           # Persistant data storage
 import snip.jfileutil as ju
@@ -298,7 +299,7 @@ class db():
                 print("WARNING! File not found: ", image_path)
                 # traceback.print_exc()
                 return
-            except ValueError:
+            except (ValueError, cv2_error):
                 print("WARNING! Error parsing image: ", image_path)
                 traceback.print_exc()
                 with open(f"badfiles_{self.shelvefile}.txt", "a", newline='\n') as shellfile:
