@@ -11,6 +11,7 @@ from PIL import Image
 from tkinter import ttk
 
 import snip
+from snip import tkit
 
 import traceback
 from snip.tkit.contentcanvas import ContentCanvas
@@ -75,58 +76,6 @@ class Preloader(tk.Frame):
         pass
 
 
-class ReplaceDialog(Dialog):
-
-    def __init__(self, parent, hash, filelist, onDoOpCallback):
-        self.filelist = filelist
-        self.onDoOp = onDoOpCallback
-        self.hash = hash
-        super().__init__(parent=parent)
-
-    def body(self, master):
-
-        print(self.filelist)
-
-        maxindex = len(self.filelist) - 1
-
-        tk.Label(master, text="Source:").grid(column=0, row=0)
-        self.picker_source = ttk.Combobox(master, values=self.filelist)
-        self.picker_source.grid(column=1, row=0, sticky="ew")
-        self.picker_source.current(min(0, maxindex))
-        self.picker_source.focus()
-
-        tk.Label(master, text="Target:").grid(column=0, row=1)
-        self.picker_target = ttk.Combobox(master, values=self.filelist)
-        self.picker_target.grid(column=1, row=1, sticky="ew")
-        self.picker_target.current(min(1, maxindex))
-
-        text_width = max(len(text) for text in self.filelist)
-        self.picker_target.config(width=text_width)
-        self.picker_source.config(width=text_width)
-
-        master.columnconfigure(1, weight=1)
-        master.pack(padx=5, pady=5, fill="x")
-
-    def apply(self):
-        source = self.picker_source.get()
-        target = self.picker_target.get()
-
-        assert not os.path.isdir(source)
-
-        snip.filesystem.copyFileToDir(source, "undo", clobber=True)
-        try:
-            # Target doesn't have to exist
-            snip.filesystem.copyFileToDir(target, "undo", clobber=True)
-        except FileNotFoundError:
-            pass
-
-        if os.path.isdir(target):
-            snip.filesystem.moveFileToDir(source, target, clobber=True)
-        else:
-            snip.filesystem.moveFileToFile(source, target, clobber=True)
-        self.onDoOp(self.hash, source, target)
-
-
 class MainWindow(tk.Tk):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -152,12 +101,6 @@ class MainWindow(tk.Tk):
                 )[-1]
             )[0]
         )
-
-    def refreshAfterOp(self, hash, source, target):
-        if target not in self.duplicates[self.current_hash]:
-            self.duplicates[hash].append(target)
-        self.canvas.markCacheDirty(source)
-        self.canvas.markCacheDirty(target)
 
     def open_shelvefile(self, shelvefile):
         if not shelvefile:
@@ -197,6 +140,7 @@ class MainWindow(tk.Tk):
 
         self.bind("<d>", self.on_btn_delete)
         self.bind("<a>", self.on_btn_undo)
+        self.bind("<m>", self.on_btn_move)
         self.bind("<r>", self.on_btn_replace)
         self.bind("<c>", self.on_btn_concat)
 
@@ -219,17 +163,21 @@ class MainWindow(tk.Tk):
 
         btn_open = ttk.Button(self.toolbar, text="Open", takefocus=False, command=self.pick_and_open_shelvefile)
         btn_delete = ttk.Button(self.toolbar, text="Delete", takefocus=False, command=self.on_btn_delete)
+        btn_move = ttk.Button(self.toolbar, text="Move", takefocus=False, command=self.on_btn_move)
         btn_replace = ttk.Button(self.toolbar, text="Replace", takefocus=False, command=self.on_btn_replace)
         btn_concat = ttk.Button(self.toolbar, text="Concatenate", takefocus=False, command=self.on_btn_concat)
 
         self.var_progbar_prog = tk.IntVar()
         self.progbar_prog = ttk.Progressbar(self.toolbar, variable=self.var_progbar_prog)
 
-        for btn in [btn_open, btn_delete, btn_replace, btn_concat, self.progbar_prog]:
+        for btn in [btn_open, btn_delete, btn_move, btn_replace, btn_concat, self.progbar_prog]:
             btn.grid(row=rowInOrder(), sticky="ew")
 
     def update_infobox(self):
         filepath = self.current_file.get()
+        if not filepath:
+            return
+
         filename = os.path.split(filepath)[1]
         filesize = snip.strings.bytes_to_string(os.path.getsize(filepath))
         try:
@@ -286,10 +234,46 @@ class MainWindow(tk.Tk):
                 os.path.dirname(p), 
                 os.path.splitext(p)[0] + "-alt" + os.path.splitext(p)[1]
             ) for p in self.current_filelist
-        ]
-        filelist = self.current_filelist + permutations        
-        ReplaceDialog(self, self.current_hash, filelist, self.refreshAfterOp)
-        self.onHashSelect()
+        ]   
+        results = tkit.MultiSelectDialog(
+            self,
+            ["Source: ", "Target: "],
+            [self.current_filelist, self.current_filelist + permutations],
+            stagger_lists=True
+        ).results
+
+        if results:
+            source, target = results
+            snip.filesystem.moveFileToFile(source, target, clobber=True)
+
+            if target not in self.duplicates[self.current_hash]:
+                self.duplicates[self.current_hash].append(target)
+            self.canvas.markCacheDirty(source)
+            self.canvas.markCacheDirty(target)
+
+            self.onHashSelect()
+        self.after(20, self.canvas.focus)
+
+    def on_btn_move(self, event=None):
+        results = tkit.MultiSelectDialog(
+            self,
+            ["Source: ", "New directory: "],
+            [
+                self.current_filelist, 
+                list(set(os.path.dirname(p) for p in self.current_filelist)) + list(set(os.path.dirname(os.path.dirname(p)) for p in self.current_filelist))
+            ],
+            stagger_lists=False
+        ).results
+
+        if results:
+            source, target = results
+
+            assert os.path.isdir(target)
+            new_path = snip.filesystem.moveFileToDir(source, target, clobber=False)
+
+            self.duplicates[self.current_hash].append(new_path)
+
+            self.onHashSelect()
         self.after(20, self.canvas.focus)
 
     def on_btn_concat(self, event=None):
@@ -363,4 +347,4 @@ if __name__ == "__main__":
             MainWindow()
     except KeyboardInterrupt:
         traceback.print_exc()
-        raise
+        os.abort()
