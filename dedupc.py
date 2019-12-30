@@ -403,9 +403,6 @@ def parse_args():
     ap.add_argument(
         "-d", "--delete", action="store_true",
         help="Delete duplicate files by moving them to a temporary directory.")
-    ap.add_argument(
-        "-c", "--compare", action="store_true",
-        help="Generate imagemagick commands to compare \"duplicates\".")
 
     ap.add_argument(
         "--debug", action="store_true",
@@ -436,7 +433,7 @@ def main():
 
     # Scan directories for files and populate database
     if args.scanfiles:
-        print_debug("Building filelists")
+        print_debug("Scanning for files")
         # print(args.files)
         _image_paths = sum([glob.glob(a, recursive=True) for a in args.scanfiles], [])
 
@@ -454,12 +451,8 @@ def main():
         if args.purge or args.prune:
             db.prune(purge=args.purge, keeppaths=image_paths)
 
+        print("Fingerprinting")
         db.scanDirs(image_paths, recheck=args.recheck, hash_size=args.hashsize)
-
-    # Run commands as requested
-
-    if args.remeta:
-        remetaFiles(db, mock=args.mock, clobber=args.clobber)
 
     # Run commands as requested
     if args.renameDb:
@@ -467,9 +460,6 @@ def main():
 
     if args.renameFromPaths:
         renameFilesFromPaths(image_paths, args.hashsize, mock=args.mock, clobber=args.clobber)
-
-    if args.compare:
-        magickCompareDuplicates(db)
 
     if args.delete:
         files_to_delete = getDuplicatesToDelete(db, args.interactive)
