@@ -14,7 +14,7 @@ Deleted Attributes:
     SORTDEBUG (bool): Description
 """
 import imagehash        # Perceptual image hashing
-import progressbar      # Progress bars
+import tqdm             # Progress bars
 import os.path          # isfile() method
 import traceback
 from PIL import Image   # Image IO libraries
@@ -371,13 +371,15 @@ class db():
 
             pbar = None
             if self.progressbar_allowed:
-                pbar = progressbar.ProgressBar(max_value=len(db.keys()), redirect_stdout=True)
-                i = 0
+                pbar = tqdm.tqdm(
+                    desc="Query",
+                    total=len(db.keys()),
+                    unit="hash"
+                )
 
             for key in list(db.keys()):
                 if pbar:
-                    i += 1
-                    pbar.update(i)
+                    pbar.update()
 
                 # Remove files that no longer exist and remove duplicate filenames
                 filenames = db[key]
@@ -402,4 +404,4 @@ class db():
                         yield filenames
 
         if pbar:
-            pbar.finish()
+            pbar.close()
