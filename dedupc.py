@@ -122,14 +122,14 @@ def getDuplicatesToDelete(db, interactive=False):
         # CHECK: Process and evalulate duplicate fingerprints.
         print_info("Checking database for duplicates")
         i = 0
-        for filenames in db.generateDuplicateFilelists(threshhold=2):
-            # filenames = sortDuplicatePaths(filenames)
+        for filelist in db.generateDuplicateFilelists(threshhold=2):
+            # filelist = sortDuplicatePaths(filelist)
             if interactive:
                 # The user gets to pick the image to keep.
                 # Print up a pretty menu.
                 print()
-                for i in range(0, len(filenames)):
-                    print("{0}. {1}".format(i, filenames[i]))
+                for i in range(0, len(filelist)):
+                    print("{0}. {1}".format(i, filelist[i]))
                 # Loop over the menu until the user selects a valid option
                 good_ans = False
                 while not good_ans:
@@ -148,9 +148,9 @@ def getDuplicatesToDelete(db, interactive=False):
                             ans = 0
 
                         index = int(ans)
-                        goingtokeep = filenames[index]
-                        goingtodelete = filenames[:index] + \
-                            filenames[(index + 1):]
+                        goingtokeep = filelist[index]
+                        goingtodelete = filelist[:index] + \
+                            filelist[(index + 1):]
                         good_ans = True
                     except ValueError:
                         print("Not a valid number. ")  # Have another go.
@@ -158,20 +158,20 @@ def getDuplicatesToDelete(db, interactive=False):
                 # Not interactive.
                 # We keep the FIRST file in the sort.
                 # We'll delete the rest.
-                goingtokeep = filenames[0]
-                goingtodelete = filenames[1:]
+                goingtokeep = filelist[0]
+                goingtodelete = filelist[1:]
                 if (goingtokeep is None or len(goingtokeep) == 0):
                     # Just in case.
-                    for sym in [filenames, goingtokeep, goingtodelete]:
+                    for sym in [filelist, goingtokeep, goingtodelete]:
                         print(sym)
                     raise AssertionError("Internal logic consistancy error. Program instructed to consider ALL images with a given hash as extraneous. Please debug.")
             
-            # However the method, add all our doomed files to the list.
-            filestodelete += goingtodelete
-
-            # And explain ourselves.
+            # However the method, add all our doomed files to the list and print our explanation.
             explanation = "\n\t" + "\n\t".join(["+ " + goingtokeep] + ["- " + f for f in goingtodelete])
             print_info(explanation)
+
+            filestodelete += goingtodelete
+
         return filestodelete
 
 
