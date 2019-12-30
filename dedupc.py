@@ -584,9 +584,6 @@ def parse_args():
         "--files-exempt", nargs='+', required=False, default=list(),
         help="File substrings to ignore")
     ap.add_argument(
-        "--purge", action="store_true",
-        help="Delete records of files not currently seen, even if they're in the database.")
-    ap.add_argument(
         "-s", "--shelve",
         required=True, help="Database name")
     ap.add_argument(
@@ -642,8 +639,11 @@ def parse_args():
         "--noprogress", action="store_true",
         help="Disallow progress bars.")
     ap.add_argument(
-        "--noprune", action="store_true",
-        help="Do not remove stale records from database. Opposite of purge.")
+        "--purge", action="store_true",
+        help="Delete records of files not currently seen, even if they're in the database.")
+    ap.add_argument(
+        "--prune", action="store_true",
+        help="Remove stale records from database in advance.")
     # ap.add_argument("--nocheck", help="Don't search the database for duplicates, just fingerprint the files in --dataset.",
     #                 action="store_true")
     return ap.parse_args()
@@ -673,7 +673,7 @@ def main():
 
         # File handling and fallbacks
 
-        if not args.noprune:
+        if args.purge or args.prune:
             db.prune(purge=args.purge, keeppaths=image_paths)
 
         db.scanDirs(image_paths, recheck=args.recheck, hash_size=args.hashsize)

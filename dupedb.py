@@ -352,7 +352,7 @@ class db():
                     for image_path in image_path_chunk:
                         fpSpool.enqueue(target=fingerprintImage, args=(jdb, image_path,))
 
-    def generateDuplicateFilelists(self, bundleHash=False, threshhold=1, sort=True):
+    def generateDuplicateFilelists(self, bundleHash=False, threshhold=1, sort=True, validate=True):
         """Generate lists of files which all have the same hash.
         
         Args:
@@ -367,29 +367,27 @@ class db():
         """
         print("Generating information about duplicate images from database")
 
-        with ju.RotatingHandler(self.shelvefile, basepath="databases", readonly=True) as db:
+        with ju.RotatingHandler(self.shelvefile, basepath="databases", readonly=False) as db:
 
             pbar = None
             if self.progressbar_allowed:
                 pbar = progressbar.ProgressBar(max_value=len(db.keys()), redirect_stdout=True)
                 i = 0
 
-            for h in db.keys():
+            for key in list(db.keys()):
                 if pbar:
                     i += 1
                     pbar.update(i)
 
-                # Remove duplicate filenames
-                filenames = db[h]
-                db[h] = filenames = list(set(filenames))
+                # Remove files that no longer exist and remove duplicate filenames
+                filenames = db[key]
+                if validate:
+                    db[key] = filenames = list(filter(os.path.isfile, set(db[key])))
 
-                # Verify that all these files exist.
-                # missing_files = []
-                # for filepath in (f for f in filenames if not os.path.isfile(f)):
-                #     missing_files.append(filepath)
-
-                # for filepath in missing_files:
-                #     filenames.remove(filepath)
+                    # Remove hashes with no files
+                    if len(db[key]) == 0:
+                        db.pop(key)
+                        continue
 
                 # If there is STILL more than one file with the hash:
                 if sort and len(filenames) >= threshhold:
@@ -397,9 +395,9 @@ class db():
                 if len(filenames) >= threshhold:
                     if self.verbose:
                         print("Found {0} duplicate images for hash [{1}]".format(
-                            len(filenames), h))
+                            len(filenames), key))
                     if bundleHash:
-                        yield (filenames, h)
+                        yield (filenames, key)
                     else:
                         yield filenames
 
