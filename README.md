@@ -58,6 +58,8 @@ optional arguments:
 
 Gui-based image comparison
 
+![comparedemo.gif](README.assets/comparedemo.gif)
+
 ```
 usage: compare.py [-h] [-l] [--debug] [--verbose] shelvefile
 

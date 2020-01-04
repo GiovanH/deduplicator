@@ -3,6 +3,8 @@ comparison/
 databases/
 deleted/
 script/
+badfiles*/
+undo/
 *.sh
 test/
 do*.sh
