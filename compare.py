@@ -105,7 +105,7 @@ class MainWindow(tk.Tk):
     def open_shelvefile(self, shelvefile):
         if not shelvefile:
             return
-        self.db = dupedb.db(shelvefile, bad_words=["Unsorted"], good_words=["Keep"])
+        self.db = dupedb.db(shelvefile, bad_words=["Unsorted"], good_words=["Keep", "Curated", "F:"])
 
         self.current_hash = ""
 
@@ -297,7 +297,7 @@ class MainWindow(tk.Tk):
     # Load and select
 
     def loadDuplicates(self):
-        generator = self.db.generateDuplicateFilelists(bundleHash=True, threshhold=2)
+        generator = self.db.generateDuplicateFilelists(bundleHash=True, threshhold=2, validate=False)
         self.duplicates = {}
         for (sorted_filenames, bundled_hash) in generator:
             self.duplicates[bundled_hash] = sorted_filenames
@@ -323,7 +323,6 @@ class MainWindow(tk.Tk):
         for widget in self.file_picker.winfo_children():
             widget.destroy()
 
-        set_first_file = True
         self.current_file.set("")
         self.current_filelist = list(filter(TRASH.isfile, self.duplicates[self.current_hash]))
         # self.listbox_images.delete(0, self.listbox_images.size())
@@ -335,9 +334,8 @@ class MainWindow(tk.Tk):
                 value=filename
             ).pack(anchor="w")
 
-            if set_first_file:
+            if not self.current_file.get():
                 self.current_file.set(filename)
-                set_first_file = False
 
 
 if __name__ == "__main__":
@@ -345,6 +343,6 @@ if __name__ == "__main__":
         global TRASH
         with snip.filesystem.Trash(verbose=True) as TRASH:
             MainWindow()
-    except KeyboardInterrupt:
+    except Exception:
         traceback.print_exc()
         os.abort()

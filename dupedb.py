@@ -89,8 +89,8 @@ def imageSize(filename):
         print("WARNING! File not found: " + filename)
         raise FileNotFoundError(filename)
     except OSError:
-        print("WARNING! OS error with file: " + filename)
-        traceback.print_exc()
+        # print("WARNING! OS error with file: " + filename)
+        # traceback.print_exc()
         return 0
 
 
@@ -114,13 +114,12 @@ def makeSortTuple(x, good_words=[], bad_words=[]):
     upper = x.upper()
     return (
         -snip.image.framesInImage(x),  # High frames good
-        -(imageSize(x) if isImage(x) else os.path.getsize(x)),  # High resolution good
-        -upper.count("F:{s}".format(s=sep)),  # Put images in drive F higher.
-        -sum([upper.count(x.upper()) for x in good_words]),  # Put images with bad words higher
-        +sum([upper.count(x.upper()) for x in bad_words]),  # Put images with bad words lower
-        -len(x[:x.rfind(sep)]),  # Deep paths good
+        -imageSize(x),  # High resolution good
+        -sum([upper.count(w.upper()) for w in good_words]),  # Put images with good words higher
+        +sum([upper.count(w.upper()) for w in bad_words]),  # Put images with bad words lower
         +os.path.getsize(x),  # Low filesize good (if resolution is the same!)
-        -len(x)  # Longer length filename better
+        -len(x[:x.rfind(sep)]),  # Deep paths good
+        -(upper.count("-") + upper.count("_") + upper.count(" "))  # Detailed filenames better
     )
 
 
@@ -278,7 +277,7 @@ class db():
         # SCAN: Scan filesystem for images and hash them.
 
         # Threading
-        def fingerprintImage(db, image_path):
+        def fingerprintImage(db, image_path, print):
             """Updates database db with phash data of image at image_path.
             
             Args:
@@ -348,9 +347,9 @@ class db():
         print("Fingerprinting {} images with hash size {}".format(num_images_to_fingerprint, hash_size))
         for (i, image_path_chunk) in enumerate(snip.data.chunk(images_to_fingerprint, chunk_size)):
             with ju.RotatingHandler(self.shelvefile, default=dict(), basepath="databases", readonly=False) as jdb:
-                with snip.loom.Spool(10, name="Fingerprint {}/{}".format(i + 1, total_chunks)) as fpSpool:
+                with snip.loom.Spool(10, name="Fingerprint {}/{}".format(i + 1, total_chunks), belay=True) as fpSpool:
                     for image_path in image_path_chunk:
-                        fpSpool.enqueue(target=fingerprintImage, args=(jdb, image_path,))
+                        fpSpool.enqueue(target=fingerprintImage, args=(jdb, image_path, fpSpool.print))
 
     def generateDuplicateFilelists(self, bundleHash=False, threshhold=1, sort=True, validate=True):
         """Generate lists of files which all have the same hash.
@@ -367,7 +366,7 @@ class db():
         """
         print("Generating information about duplicate images from database")
 
-        with ju.RotatingHandler(self.shelvefile, basepath="databases", readonly=False) as db:
+        with ju.RotatingHandler(self.shelvefile, basepath="databases", readonly=(not validate)) as db:
 
             pbar = None
             if self.progressbar_allowed:
@@ -381,8 +380,12 @@ class db():
                 if pbar:
                     pbar.update()
 
-                # Remove files that no longer exist and remove duplicate filenames
                 filenames = db[key]
+                
+                if len(filenames) < threshhold:
+                    continue
+
+                # Remove files that no longer exist and remove duplicate filenames
                 if validate:
                     db[key] = filenames = list(filter(os.path.isfile, set(db[key])))
 
