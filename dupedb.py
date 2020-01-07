@@ -119,7 +119,7 @@ def makeSortTuple(x, good_words=[], bad_words=[]):
         -imageSize(x),  # High resolution good
         -sum([upper.count(w.upper()) for w in good_words]),  # Put images with good words higher
         +sum([upper.count(w.upper()) for w in bad_words]),  # Put images with bad words lower
-        +os.path.getsize(x),  # Low filesize good (if resolution is the same!)
+        -os.path.getsize(x),  # High filesize good (if resolution is the same!)
         -len(x[:x.rfind(sep)]),  # Deep paths good
         -(upper.count("-") + upper.count("_") + upper.count(" "))  # Detailed filenames better
     )
