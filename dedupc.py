@@ -417,7 +417,7 @@ def main():
         if args.purge:
             db.prune(keeppaths=image_paths)
 
-        print("Fingerprinting")
+        logger.info("Fingerprinting")
         db.scanDirs(image_paths, recheck=args.recheck, hash_size=args.hashsize)
 
     if args.prune:

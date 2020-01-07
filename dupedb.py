@@ -279,6 +279,9 @@ class db():
                 TYPE: Description
             """
 
+            # Print statements go to the spool
+            # Logger still logs debug statements
+
             # load the image and compute the difference hash
             try:
                 proc_hash = getProcHash(image_path, hash_size)
@@ -286,12 +289,14 @@ class db():
                 # proc_hash = proc_hash.decode("hex").encode("base64")
 
             except FileNotFoundError:
-                logger.error("File not found: ", image_path)
+                print("File not found '%s'" % image_path)
+                logger.debug("File not found '%s'", image_path)
                 # traceback.print_exc()
                 return
             except (ValueError, cv2_error):
-                logger.error("Error parsing image: ", image_path)
-                traceback.print_exc()
+                print("Error parsing image '%s'" % image_path)
+                print(traceback.format_exc())
+                logger.debug("Error parsing image '%s'", image_path, exc_info=True)
                 with open(f"badfiles_{self.shelvefile}.txt", "a", newline='\n') as shellfile:
                     shellfile.write("{} \n".format(image_path))
                     
@@ -300,7 +305,8 @@ class db():
                 if os.path.isdir(image_path):
                     return
 
-                logger.error("File", image_path, "is corrupt or invalid.")
+                print("File '%s' is corrupt or invalid." % image_path)
+                logger.debug("File '%s' is corrupt or invalid.", image_path)
                 with open(f"badfiles_{self.shelvefile}.txt", "a", newline='\n') as shellfile:
                     shellfile.write("{} \n".format(image_path))
 
@@ -312,7 +318,7 @@ class db():
             # Each Key (a hash) has a List value.
             # The list is a list of file paths with that hash.
             if filename not in db.get(proc_hash, []):
-                logger.debug("New file:", image_path, proc_hash)
+                logger.debug("New file: '%s' w/ hash '%s'", image_path, proc_hash)
                 db[proc_hash] = db.get(proc_hash, []) + [filename]
 
         # Reset forcedelete script
