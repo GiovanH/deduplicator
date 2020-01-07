@@ -389,9 +389,9 @@ class db():
                         continue
 
                 # If there is STILL more than one file with the hash:
-                if sort and len(filenames) >= threshhold:
-                    filenames = self.sortDuplicatePaths(filenames)
                 if len(filenames) >= threshhold:
+                    if sort:
+                        filenames = self.sortDuplicatePaths(filenames)
                     logger.debug("Found {0} duplicate images for hash [{1}]".format(len(filenames), key))
                     if bundleHash:
                         yield (filenames, key)
