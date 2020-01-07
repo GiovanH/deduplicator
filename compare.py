@@ -111,7 +111,7 @@ class MainWindow(tk.Tk):
     def open_shelvefile(self, shelvefile):
         if not shelvefile:
             return
-        self.db = dupedb.db(shelvefile, bad_words=["Unsorted"], good_words=["Keep", "Curated", "F:"])
+        self.db = dupedb.db(shelvefile)
 
         self.current_hash = ""
 
@@ -185,11 +185,13 @@ class MainWindow(tk.Tk):
             return
 
         filename = os.path.split(filepath)[1]
-        filesize = snip.strings.bytes_to_string(os.path.getsize(filepath))
+        filesize = os.path.getsize(filepath)
+        filesize_str = snip.strings.bytes_to_string(filesize)
         try:
             frames = snip.image.framesInImage(filepath)
             w, h = Image.open(filepath).size
-            newtext = f"{filename} [{frames}f]\n{filesize} [{w}x{h}px]"
+            ratio = filesize / (w * h)
+            newtext = f"{filename} [{frames}f]\n{filesize_str} [{w}x{h}px] [{ratio}]"
         except Exception:
             newtext = f"{filename} \n{filesize}"
             # traceback.print_exc()
@@ -250,6 +252,9 @@ class MainWindow(tk.Tk):
 
         if results:
             source, target = results
+
+            target = os.path.splitext(target)[0] + os.path.splitext(source)[1]
+
             snip.filesystem.moveFileToFile(source, target, clobber=True)
 
             if target not in self.duplicates[self.current_hash]:
@@ -274,7 +279,9 @@ class MainWindow(tk.Tk):
         if results:
             source, target = results
 
-            assert os.path.isdir(target)
+            if not os.path.isdir(target):
+                os.makedirs(target)
+            
             new_path = snip.filesystem.moveFileToDir(source, target, clobber=False)
 
             self.duplicates[self.current_hash].append(new_path)
