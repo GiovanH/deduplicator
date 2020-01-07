@@ -28,7 +28,8 @@ import snip
 import snip.image
 from snip.loom import Spool
 
-# Todo: Replace some sep formatting with os.path.join
+from snip.stream import TriadLogger
+logger = TriadLogger(__name__)
 
 # DEBUG_FILE_EXISTS = False
 VALID_IMAGE_EXTENSIONS = ["gif", "jpg", "png", "jpeg", "bmp"]
@@ -86,7 +87,7 @@ def imageSize(filename):
     except Image.DecompressionBombError:
         return Image.MAX_IMAGE_PIXELS
     except FileNotFoundError:
-        print("WARNING! File not found: " + filename)
+        logger.error("File not found: " + filename)
         raise FileNotFoundError(filename)
     except OSError:
         # print("WARNING! OS error with file: " + filename)
@@ -133,17 +134,15 @@ class db():
         IScachetotal (TYPE): Description
         shelvefile (TYPE): Description
         sort_debug (TYPE): Description
-        verbose (TYPE): Description
     """
     
-    def __init__(self, shelvefile, bad_words=[], good_words=[], debug=False, verbose=False, progressbar_allowed=True):
+    def __init__(self, shelvefile, bad_words=[], good_words=[], progressbar_allowed=True):
         """Summary
         
         Args:
             shelvefile (TYPE): Description
             bad_words (list, optional): Description
             sort_debug (bool, optional): Description
-            verbose (bool, optional): Description
         """
         super(db, self).__init__()
 
@@ -151,9 +150,7 @@ class db():
 
         self.bad_words = bad_words
         self.good_words = good_words
-        self.debug = debug
         self.progressbar_allowed = progressbar_allowed
-        self.verbose = verbose
 
         self.IScachetotal = self.IScachefails = 0
 
@@ -182,7 +179,7 @@ class db():
         else:
             self.IScachefails += 1
             if self.IScachefails % 8000 == 0:
-                print("Too many cache misses: only {:5}/{:5} hits".format((self.IScachetotal - self.IScachefails), self.IScachetotal))
+                logger.warn("Too many cache misses: only {:5}/{:5} hits".format((self.IScachetotal - self.IScachefails), self.IScachetotal))
                 # ju.save(self.fsizecache, "sizes")
 
             size = imageSize(filename) if isImage(filename) else os.path.getsize(filename)
@@ -277,7 +274,7 @@ class db():
         # SCAN: Scan filesystem for images and hash them.
 
         # Threading
-        def fingerprintImage(db, image_path, print):
+        def fingerprintImage(db, image_path):
             """Updates database db with phash data of image at image_path.
             
             Args:
@@ -295,11 +292,11 @@ class db():
                 # proc_hash = proc_hash.decode("hex").encode("base64")
 
             except FileNotFoundError:
-                print("WARNING! File not found: ", image_path)
+                logger.error("File not found: ", image_path)
                 # traceback.print_exc()
                 return
             except (ValueError, cv2_error):
-                print("WARNING! Error parsing image: ", image_path)
+                logger.error("Error parsing image: ", image_path)
                 traceback.print_exc()
                 with open(f"badfiles_{self.shelvefile}.txt", "a", newline='\n') as shellfile:
                     shellfile.write("{} \n".format(image_path))
@@ -309,7 +306,7 @@ class db():
                 if os.path.isdir(image_path):
                     return
 
-                print("ERROR: File", image_path, "is corrupt or invalid.")
+                logger.error("File", image_path, "is corrupt or invalid.")
                 with open(f"badfiles_{self.shelvefile}.txt", "a", newline='\n') as shellfile:
                     shellfile.write("{} \n".format(image_path))
 
@@ -321,8 +318,7 @@ class db():
             # Each Key (a hash) has a List value.
             # The list is a list of file paths with that hash.
             if filename not in db.get(proc_hash, []):
-                if self.debug:
-                    print("New file:", image_path, proc_hash)
+                logger.debug("New file:", image_path, proc_hash)
                 db[proc_hash] = db.get(proc_hash, []) + [filename]
 
         # Reset forcedelete script
@@ -344,12 +340,12 @@ class db():
         from math import ceil
         total_chunks = ceil(num_images_to_fingerprint / chunk_size)
 
-        print("Fingerprinting {} images with hash size {}".format(num_images_to_fingerprint, hash_size))
+        logger.info("Fingerprinting {} images with hash size {}".format(num_images_to_fingerprint, hash_size))
         for (i, image_path_chunk) in enumerate(snip.data.chunk(images_to_fingerprint, chunk_size)):
             with ju.RotatingHandler(self.shelvefile, default=dict(), basepath="databases", readonly=False) as jdb:
                 with snip.loom.Spool(10, name="Fingerprint {}/{}".format(i + 1, total_chunks), belay=True) as fpSpool:
                     for image_path in image_path_chunk:
-                        fpSpool.enqueue(target=fingerprintImage, args=(jdb, image_path, fpSpool.print))
+                        fpSpool.enqueue(target=fingerprintImage, args=(jdb, image_path,))
 
     def generateDuplicateFilelists(self, bundleHash=False, threshhold=1, sort=True, validate=True):
         """Generate lists of files which all have the same hash.
@@ -364,7 +360,7 @@ class db():
             tuple: (list, hash) OR
             list: File paths of duplicates
         """
-        print("Generating information about duplicate images from database")
+        logger.info("Generating information about duplicate images from database")
 
         with ju.RotatingHandler(self.shelvefile, basepath="databases", readonly=(not validate)) as db:
 
@@ -398,9 +394,7 @@ class db():
                 if sort and len(filenames) >= threshhold:
                     filenames = self.sortDuplicatePaths(filenames)
                 if len(filenames) >= threshhold:
-                    if self.verbose:
-                        print("Found {0} duplicate images for hash [{1}]".format(
-                            len(filenames), key))
+                    logger.debug("Found {0} duplicate images for hash [{1}]".format(len(filenames), key))
                     if bundleHash:
                         yield (filenames, key)
                     else:

@@ -14,36 +14,10 @@ from PIL import Image
 import snip.filesystem
 import dupedb
 
+from snip.stream import TriadLogger
+logger = TriadLogger(__name__)
+
 SHELVE_FILE_EXTENSIONS = ["json"]
-
-
-colorama.init(autoreset=False)
-
-
-def print_colored(color, *args, **kwargs):
-    print(*args, **kwargs)
-    # print(color, *args, **kwargs)
-    # print(colorama.Fore.RESET, end="")
-
-
-def print_io(*args, **kwargs):
-    return print_colored(colorama.Fore.CYAN, *args, **kwargs)
-
-
-def print_warn(*args, **kwargs):
-    return print_colored(colorama.Fore.YELLOW, *args, **kwargs)
-
-
-def print_info(*args, **kwargs):
-    return print_colored(colorama.Fore.WHITE, *args, **kwargs)
-
-
-def print_debug(*args, **kwargs):
-    return print_colored(colorama.Fore.MAGENTA, *args, **kwargs)
-
-
-def print_err(*args, **kwargs):
-    return print_colored(colorama.Fore.RED, *args, **kwargs)
 
 
 def deleteFiles(filestodelete):
@@ -79,10 +53,10 @@ def runMagickCommand(shelvefile, precmd, midcmd, fileact, sortedFilenames, bundl
         montageFileSize = sum(dupedb.imageSize(p) for p in sortedFilenames)
         existSize = dupedb.imageSize(outfile)
         if montageFileSize == existSize:
-            # print_warn("Path", outfile, "already exists, size matches, skipping.", montageFileSize)
+            # logger.warn("Path", outfile, "already exists, size matches, skipping.", montageFileSize)
             return
         else:
-            print_warn("Overwriting comparison file", outfile, existSize, "px vs", montageFileSize)
+            logger.warn("Overwriting comparison file", outfile, existSize, "px vs", montageFileSize)
 
     command = ["magick"]
     command += precmd.split(" ")
@@ -91,16 +65,16 @@ def runMagickCommand(shelvefile, precmd, midcmd, fileact, sortedFilenames, bundl
         command += midcmd.split(" ")
     command.append(outfile)
     
-    print_io(outfile)
+    logger.info(outfile)
     
     result = subprocess.run(command, capture_output=True, check=False)
     if len(result.stderr) + len(result.stdout) > 0:
-        print_err(*((c if c.count(" ") == 0 else '"{}"'.format(c)) for c in command))
+        logger.error(*((c if c.count(" ") == 0 else '"{}"'.format(c)) for c in command))
         # print("OUT:", bytes(result.stdout).decode("unicode_escape"))
         try:
-            print_err("ERR:", bytes(result.stderr).decode("unicode_escape"))
+            logger.error(bytes(result.stderr).decode("unicode_escape"), exc_info=True)
         except UnicodeDecodeError:
-            print_err(result.stderr)
+            logger.error(result.stderr, exc_info=True)
         # raise subprocess.CalledProcessError(result.returncode, command, result).
 
 
@@ -120,7 +94,7 @@ def getDuplicatesToDelete(db, interactive=False):
         filestodelete = []
 
         # CHECK: Process and evalulate duplicate fingerprints.
-        print_info("Checking database for duplicates")
+        logger.info("Checking database for duplicates")
         i = 0
         for filelist in db.generateDuplicateFilelists(threshhold=2):
             # filelist = sortDuplicatePaths(filelist)
@@ -168,7 +142,7 @@ def getDuplicatesToDelete(db, interactive=False):
             
             # However the method, add all our doomed files to the list and print our explanation.
             explanation = "\n\t" + "\n\t".join(["+ " + goingtokeep] + ["- " + f for f in goingtodelete])
-            print_info(explanation)
+            logger.info(explanation)
 
             filestodelete += goingtodelete
 
@@ -177,15 +151,15 @@ def getDuplicatesToDelete(db, interactive=False):
 
 def listDuplicates(db):
     for (filepaths, bundled_hash) in db.generateDuplicateFilelists(bundleHash=True, threshhold=2, sort=True):
-        print_info(bundled_hash)
+        logger.info(bundled_hash)
         lfilepaths = len(filepaths)
         tags = [" └─ " if i == lfilepaths - 1 else " ├─ " for i in range(0, lfilepaths)]
         for i, filepath in enumerate(filepaths):
-            print_info(tags[i], filepath, sep="")
-        print_info("\n")
+            logger.info(tags[i] + filepath)
+        logger.info("\n")
 
 
-def processRenameOperation(old_path, new_name, bundled_hash, successful_operations, verbose=False, mock=False, clobber=False):
+def processRenameOperation(old_path, new_name, bundled_hash, successful_operations, mock=False, clobber=False):
     """Appropriately renames files. 
     Designed to run in a thread. 
     Successful operations accumulate in list successful_operations
@@ -194,8 +168,6 @@ def processRenameOperation(old_path, new_name, bundled_hash, successful_operatio
         old_path (TYPE): Description
         new_name (TYPE): Description
         bundled_hash (str): Perceptual hash of image at file
-        verboseSuccess (bool, optional): Description
-        verboseError (bool, optional): Description
 
     Deleted Parameters:
         old (str): Old file path
@@ -209,7 +181,7 @@ def processRenameOperation(old_path, new_name, bundled_hash, successful_operatio
     new_path = os.path.join(old_dir, new_name)
 
     if mock:
-        print_warn("MOCK: {} -X-> {}".format(old_path, new_path))
+        logger.warn("MOCK: {} -X-> {}".format(old_path, new_path))
         return
 
     try:
@@ -247,7 +219,7 @@ def renameFilesFromDb(db, mock=True, clobber=False):
     # Track successful file operations
     successful_operations = []
 
-    print_info("Renaming")
+    logger.info("Renaming")
     with snip.loom.Spool(8, name="Renamer") as renamer:
         for (filepaths, bundled_hash) in db.generateDuplicateFilelists(bundleHash=True, threshhold=1, sort=False):
             i = 0
@@ -274,7 +246,7 @@ def renameFilesFromDb(db, mock=True, clobber=False):
     # Create undo file
     os.makedirs("undo", exist_ok=True)
     ufilename = "undo/undorename_{}_{}.sh".format(db.shelvefile, str(int(time())))
-    print_io("Creating undo file at {}".format(ufilename))
+    logger.info("Creating undo file at {}".format(ufilename))
     with open(ufilename, "w+", newline='\n') as scriptfile:
         scriptfile.write("#!/bin/bash\n")
         for (old, new, bundled_hash) in successful_operations:
@@ -282,7 +254,7 @@ def renameFilesFromDb(db, mock=True, clobber=False):
                 old=old, new=new))
 
     # Write new filenames to database
-    print_info("Adding new files to database")
+    logger.info("Adding new files to database")
     for (old, new, bundled_hash) in successful_operations:
         db.updateRaw(old, new, bundled_hash)
 
@@ -312,7 +284,7 @@ def renameFilesFromPaths(filepaths, hash_size, mock=True, clobber=False):
 
     i = 0
 
-    print_info("Renaming")
+    logger.info("Renaming")
     with snip.loom.Spool(8, name="Renamer") as renamer:
         for old_file_path in filepaths:
             if old_file_path.find("!") > -1:
@@ -340,7 +312,7 @@ def renameFilesFromPaths(filepaths, hash_size, mock=True, clobber=False):
     # Create undo file
     os.makedirs("undo", exist_ok=True)
     ufilename = "undo/undorename_manual_{}.sh".format(str(int(time())))
-    print_io("Creating undo file at {}".format(ufilename))
+    logger.info("Creating undo file at {}".format(ufilename))
     with open(ufilename, "w+", newline='\n') as scriptfile:
         scriptfile.write("#!/bin/bash\n")
         for (old, new, bundled_hash) in successful_operations:
@@ -405,12 +377,6 @@ def parse_args():
         help="Delete duplicate files by moving them to a temporary directory.")
 
     ap.add_argument(
-        "--debug", action="store_true",
-        help="Print debugging information for hashes.")
-    ap.add_argument(
-        "--verbose", action="store_true",
-        help="Print additional information.")
-    ap.add_argument(
         "--noprogress", action="store_true",
         help="Disallow progress bars.")
     ap.add_argument(
@@ -429,11 +395,11 @@ def main():
 
     shelvefile = "{0}.s{1}".format(args.shelve, args.hashsize)
 
-    db = dupedb.db(shelvefile, args.avoid, args.prioritize, debug=args.debug, verbose=args.verbose)
+    db = dupedb.db(shelvefile, args.avoid, args.prioritize)
 
     # Scan directories for files and populate database
     if args.scanfiles:
-        print_debug("Scanning for files")
+        logger.debug("Scanning for files")
         # print(args.files)
         _image_paths = sum([glob.glob(a, recursive=True) for a in args.scanfiles], [])
 
@@ -448,11 +414,14 @@ def main():
 
         # File handling and fallbacks
 
-        if args.purge or args.prune:
-            db.prune(purge=args.purge, keeppaths=image_paths)
+        if args.purge:
+            db.prune(keeppaths=image_paths)
 
         print("Fingerprinting")
         db.scanDirs(image_paths, recheck=args.recheck, hash_size=args.hashsize)
+
+    if args.prune:
+        list(db.generateDuplicateFilelists(threshhold=1, sort=False, validate=True))
 
     # Run commands as requested
     if args.renameDb:
