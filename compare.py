@@ -79,19 +79,25 @@ class Preloader(tk.Frame):
 class MainWindow(tk.Tk):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        args = parse_args()
 
-        self.initwindow()
+        try:
 
-        if not args.shelvefile:
-            self.pick_and_open_shelvefile()
-        else:
-            self.open_shelvefile(args.shelvefile)
+            args = parse_args()
 
-        # self.load_thread = threading.Thread(target=self.loadDuplicates)
-        # self.load_thread.start()
+            self.initwindow()
 
-        self.mainloop()
+            if not args.shelvefile:
+                self.pick_and_open_shelvefile()
+            else:
+                self.open_shelvefile(args.shelvefile)
+
+            # self.load_thread = threading.Thread(target=self.loadDuplicates)
+            # self.load_thread.start()
+
+            self.mainloop()
+        except KeyboardInterrupt:
+            print("Window init aborted")
+            self.destroy()
 
     def pick_and_open_shelvefile(self):
         self.open_shelvefile(
