@@ -217,7 +217,7 @@ class db():
             dbentry.append(new)
             jdb[hash] = dbentry
 
-    def prune(self, purge=False, keeppaths=[]):
+    def purge(self, keeppaths=[]):
         """Remove hashes without files and files that no longer exist
         
         Args:
@@ -228,14 +228,7 @@ class db():
 
         def _pruneKey(dictionary, key):
             # Remove files that no longer exist
-            dictionary[key] = list(filter(os.path.isfile, dictionary[key]))
-
-            # If purge, remove files that are not in our search parameters
-            if purge:
-                dictionary[key] = list(filter(lambda p: p in keeppaths, dictionary[key]))
-
-            # Remove duplicate filenames
-            dictionary[key] = list(set(dictionary[key]))
+            dictionary[key] = list(set(filter(lambda p: p in keeppaths, dictionary[key])))
 
             # Remove hashes with no files
             if len(dictionary[key]) == 0:
