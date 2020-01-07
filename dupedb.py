@@ -27,6 +27,7 @@ import snip.jfileutil as ju
 import snip
 import snip.image
 from snip.loom import Spool
+import itertools
 
 from snip.stream import TriadLogger
 logger = TriadLogger(__name__)
@@ -384,6 +385,10 @@ class db():
                 # Remove files that no longer exist and remove duplicate filenames
                 if validate:
                     db[key] = filenames = list(filter(os.path.isfile, set(db[key])))
+
+                    for f1, f2 in itertools.combinations(filenames, 2):
+                        if os.path.samefile(f1, f2):
+                            filenames.remove(f2)
 
                     # Remove hashes with no files
                     if len(db[key]) == 0:
