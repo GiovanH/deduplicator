@@ -30,6 +30,78 @@ def deleteFiles(filestodelete):
         for path in filestodelete:
             trash.delete(path)
 
+
+def imageSize(filename):
+    """
+    Args:
+        filename (str): Path to an image on disk
+
+    Returns:
+        int: Pixels in image or 0 if file is not an image.
+
+    Raises:
+        FileNotFoundError: Path is not on disk
+    """
+
+    try:
+        w, h = Image.open(filename).size
+        size = w * h
+        return size
+    except Image.DecompressionBombError:
+        return Image.MAX_IMAGE_PIXELS
+    except FileNotFoundError:
+        logger.error("File not found: " + filename)
+        raise FileNotFoundError(filename)
+    except OSError:
+        # print("WARNING! OS error with file: " + filename)
+        # traceback.print_exc()
+        return 0
+
+
+def explainSort(paths):
+    explanation = "-frames, -res, -good, +bad, -size, -depth, -punctuation"
+    for path in paths:
+        explanation += "\n{} | {}".format(
+            makeSortTuple(path), path
+        )
+    return explanation
+
+
+def makeSortTuple(x, good_words=[], bad_words=[]):
+    upper = x.upper()
+    return (
+        -snip.image.framesInImage(x),  # High frames good
+        -imageSize(x),  # High resolution good
+        -sum([upper.count(w.upper()) for w in good_words]),  # Put images with good words higher
+        +sum([upper.count(w.upper()) for w in bad_words]),  # Put images with bad words lower
+        -os.path.getsize(x),  # High filesize good (if resolution is the same!)
+        -len(x[:x.rfind(os.path.sep)]),  # Deep paths good
+        -(upper.count("-") + upper.count("_") + upper.count(" "))  # Detailed filenames better
+    )
+
+
+def sortDuplicatePaths(filenames, good_words=[], bad_words=[]):
+    """
+    Takes a list of files known to be duplicates
+    and sorts them in order of "desirability"
+
+    Args:
+        filenames (list): List of file paths
+
+    Returns:
+        list: Sorted list of file paths
+    """
+
+    if len(filenames) <= 1:
+        return filenames
+
+    # Sorting key
+    def sort(x):
+        return makeSortTuple(x, good_words, bad_words)
+
+    return sorted(filenames, key=sort)
+
+
 def runMagickCommand(shelvefile, precmd, midcmd, fileact, sortedFilenames, bundled_hash):
     """Summary
 
@@ -64,9 +136,9 @@ def runMagickCommand(shelvefile, precmd, midcmd, fileact, sortedFilenames, bundl
     if midcmd != "" and midcmd is not None:
         command += midcmd.split(" ")
     command.append(outfile)
-    
+
     logger.info(outfile)
-    
+
     result = subprocess.run(command, capture_output=True, check=False)
     if len(result.stderr) + len(result.stdout) > 0:
         logger.error(*((c if c.count(" ") == 0 else '"{}"'.format(c)) for c in command))
@@ -79,78 +151,79 @@ def runMagickCommand(shelvefile, precmd, midcmd, fileact, sortedFilenames, bundl
 
 
 def getDuplicatesToDelete(db, interactive=False):
-        """Given a database, generate a list of duplicate files to delete.
-        
-        Args:
-            interactive (bool, optional): Require user confirmation
-        
-        Returns:
-            list: List of file paths of images marked for deletion
-        
-        Raises:
-            AssertionError: Internal error, abort
-        """
-        # Initialize a list of file paths to delete at the end.
-        filestodelete = []
+    """Given a database, generate a list of duplicate files to delete.
 
-        # CHECK: Process and evalulate duplicate fingerprints.
-        logger.info("Checking database for duplicates")
-        i = 0
-        for filelist in db.generateDuplicateFilelists(threshhold=2):
-            # filelist = sortDuplicatePaths(filelist)
-            if interactive:
-                # The user gets to pick the image to keep.
-                # Print up a pretty menu.
-                print()
-                for i in range(0, len(filelist)):
-                    print("{0}. {1}".format(i, filelist[i]))
-                # Loop over the menu until the user selects a valid option
-                good_ans = False
-                while not good_ans:
-                    # Show the choices
-                    ans = input(
-                        "\nEnter the number of the file to KEEP: (0) ('s' to skip) ")
-                    try:
-                        if ans.upper() == "S":
-                            # Skip this image (don't delete anything)
-                            # and also, for good measure, output the delete file.
-                            good_ans = True
-                            goingtokeep = "All."
-                            goingtodelete = []
-                            continue
-                        if ans is "":
-                            ans = 0
+    Args:
+        interactive (bool, optional): Require user confirmation
 
-                        index = int(ans)
-                        goingtokeep = filelist[index]
-                        goingtodelete = filelist[:index] + \
-                            filelist[(index + 1):]
+    Returns:
+        list: List of file paths of images marked for deletion
+
+    Raises:
+        AssertionError: Internal error, abort
+    """
+    # Initialize a list of file paths to delete at the end.
+    filestodelete = []
+
+    # CHECK: Process and evalulate duplicate fingerprints.
+    logger.info("Checking database for duplicates")
+    i = 0
+    for filelist in db.generateDuplicateFilelists(threshhold=2):
+        filelist = sortDuplicatePaths(filelist)
+        if interactive:
+            # The user gets to pick the image to keep.
+            # Print up a pretty menu.
+            print()
+            for i in range(0, len(filelist)):
+                print("{0}. {1}".format(i, filelist[i]))
+            # Loop over the menu until the user selects a valid option
+            good_ans = False
+            while not good_ans:
+                # Show the choices
+                ans = input(
+                    "\nEnter the number of the file to KEEP: (0) ('s' to skip) ")
+                try:
+                    if ans.upper() == "S":
+                        # Skip this image (don't delete anything)
+                        # and also, for good measure, output the delete file.
                         good_ans = True
-                    except ValueError:
-                        print("Not a valid number. ")  # Have another go.
-            else:  
-                # Not interactive.
-                # We keep the FIRST file in the sort.
-                # We'll delete the rest.
-                goingtokeep = filelist[0]
-                goingtodelete = filelist[1:]
-                if (goingtokeep is None or len(goingtokeep) == 0):
-                    # Just in case.
-                    for sym in [filelist, goingtokeep, goingtodelete]:
-                        print(sym)
-                    raise AssertionError("Internal logic consistancy error. Program instructed to consider ALL images with a given hash as extraneous. Please debug.")
-            
-            # However the method, add all our doomed files to the list and print our explanation.
-            explanation = "\n\t" + "\n\t".join(["+ " + goingtokeep] + ["- " + f for f in goingtodelete])
-            logger.info(explanation)
+                        goingtokeep = "All."
+                        goingtodelete = []
+                        continue
+                    if ans is "":
+                        ans = 0
 
-            filestodelete += goingtodelete
+                    index = int(ans)
+                    goingtokeep = filelist[index]
+                    goingtodelete = filelist[:index] + \
+                        filelist[(index + 1):]
+                    good_ans = True
+                except ValueError:
+                    print("Not a valid number. ")  # Have another go.
+        else:
+            # Not interactive.
+            # We keep the FIRST file in the sort.
+            # We'll delete the rest.
+            goingtokeep = filelist[0]
+            goingtodelete = filelist[1:]
+            if (goingtokeep is None or len(goingtokeep) == 0):
+                # Just in case.
+                for sym in [filelist, goingtokeep, goingtodelete]:
+                    print(sym)
+                raise AssertionError("Internal logic consistancy error. Program instructed to consider ALL images with a given hash as extraneous. Please debug.")
 
-        return filestodelete
+        # However the method, add all our doomed files to the list and print our explanation.
+        explanation = "\n\t" + "\n\t".join(["+ " + goingtokeep] + ["- " + f for f in goingtodelete])
+        logger.info(explanation)
+
+        filestodelete += goingtodelete
+
+    return filestodelete
 
 
 def listDuplicates(db):
-    for (filepaths, bundled_hash) in db.generateDuplicateFilelists(bundleHash=True, threshhold=2, sort=True):
+    for (filepaths, bundled_hash) in db.generateDuplicateFilelists(bundleHash=True, threshhold=2):
+        filepaths = sortDuplicatePaths(filepaths)
         logger.info(bundled_hash)
         lfilepaths = len(filepaths)
         tags = [" └─ " if i == lfilepaths - 1 else " ├─ " for i in range(0, lfilepaths)]
@@ -221,7 +294,8 @@ def renameFilesFromDb(db, mock=True, clobber=False):
 
     logger.info("Renaming")
     with snip.loom.Spool(8, name="Renamer") as renamer:
-        for (filepaths, bundled_hash) in db.generateDuplicateFilelists(bundleHash=True, threshhold=1, sort=False):
+        for (filepaths, bundled_hash) in db.generateDuplicateFilelists(bundleHash=True, threshhold=1):
+            filepaths = sortDuplicatePaths(filepaths)
             i = 0
             # for old_file_name in sortDuplicatePaths(filepaths):
             for old_file_path in filepaths:
@@ -331,7 +405,7 @@ def parse_args():
     ap = argparse.ArgumentParser()
 
     ap.add_argument(
-        "-f", "--scanfiles", nargs='+', 
+        "-f", "--scanfiles", nargs='+',
         help="File globs that select which files to check. Globstar supported.")
     ap.add_argument(
         "--files-exempt", nargs='+', required=False, default=list(),
@@ -421,7 +495,7 @@ def main():
         db.scanDirs(image_paths, recheck=args.recheck, hash_size=args.hashsize)
 
     if args.prune:
-        list(db.generateDuplicateFilelists(threshhold=1, sort=False, validate=True))
+        list(db.generateDuplicateFilelists(threshhold=1, validate=True))
 
     # Run commands as requested
     if args.renameDb:

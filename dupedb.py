@@ -112,17 +112,7 @@ def getProcHash(file_path, hash_size):
         return snip.hash.md5file(file_path)
 
 
-def makeSortTuple(x, good_words=[], bad_words=[]):
-    upper = x.upper()
-    return (
-        -snip.image.framesInImage(x),  # High frames good
-        -imageSize(x),  # High resolution good
-        -sum([upper.count(w.upper()) for w in good_words]),  # Put images with good words higher
-        +sum([upper.count(w.upper()) for w in bad_words]),  # Put images with bad words lower
-        -os.path.getsize(x),  # High filesize good (if resolution is the same!)
-        -len(x[:x.rfind(sep)]),  # Deep paths good
-        -(upper.count("-") + upper.count("_") + upper.count(" "))  # Detailed filenames better
-    )
+
 
 
 class db():
@@ -160,55 +150,6 @@ class db():
         # except JSONDecodeError:
         #     print("Bad fscache file, resetting. ")
         self.fsizecache = dict() 
-
-    def getMediaSize(self, filename):
-        """Summary
-        
-        Args:
-            filename (TYPE): Description
-        
-        Returns:
-            TYPE: Description
-        """
-        h4sh = snip.hash.md5file(filename)
-        hit = self.fsizecache.get(h4sh)
-        # self.IScachetotal
-        # self.IScachefails
-        # self.IScachetotal += 1
-        if hit:
-            return hit
-        else:
-            self.IScachefails += 1
-            if self.IScachefails % 8000 == 0:
-                logger.warn("Too many cache misses: only {:5}/{:5} hits".format((self.IScachetotal - self.IScachefails), self.IScachetotal))
-                # ju.save(self.fsizecache, "sizes")
-
-            size = imageSize(filename) if isImage(filename) else os.path.getsize(filename)
-            self.fsizecache[h4sh] = size
-            return size
-
-    def sortDuplicatePaths(self, filenames):
-        """
-        Takes a list of files known to be duplicates
-        and sorts them in order of "desirability"
-        
-        Args:
-            filenames (list): List of file paths
-        
-        Returns:
-            list: Sorted list of file paths
-        """
-
-        if len(filenames) <= 1:
-            return filenames
-
-        # Sorting key
-        def sort(x):
-            return makeSortTuple(x, self.good_words, self.bad_words)
-
-        st = sorted(filter(os.path.isfile, filenames), key=sort)
-        ju.save(self.fsizecache, "sizes")
-        return st
 
     def updateRaw(self, old, new, hash):
         with ju.RotatingHandler(self.shelvefile, basepath="databases", readonly=False, default=dict()) as jdb:
@@ -347,13 +288,12 @@ class db():
                     for image_path in image_path_chunk:
                         fpSpool.enqueue(target=fingerprintImage, args=(jdb, image_path,))
 
-    def generateDuplicateFilelists(self, bundleHash=False, threshhold=1, sort=True, validate=True):
+    def generateDuplicateFilelists(self, bundleHash=False, threshhold=1, validate=True):
         """Generate lists of files which all have the same hash.
         
         Args:
             bundleHash (bool, optional): Description
             threshhold (int, optional): Description
-            sort (bool, optional): Description
             progressbar_allowed (bool, optional): Description
         
         Yields:
@@ -396,8 +336,6 @@ class db():
 
                 # If there is STILL more than one file with the hash:
                 if len(filenames) >= threshhold:
-                    if sort:
-                        filenames = self.sortDuplicatePaths(filenames)
                     logger.debug("Found {0} duplicate images for hash [{1}]".format(len(filenames), key))
                     if bundleHash:
                         yield (filenames, key)

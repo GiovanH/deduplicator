@@ -15,6 +15,7 @@ import traceback
 from snip.tkit.contentcanvas import ContentCanvas
 
 import dupedb
+from dedupc import sortDuplicatePaths, explainSort
 
 # from PIL import Image
 # from tkinter import messagebox
@@ -24,6 +25,8 @@ import dupedb
 # import threading
 # import glob             # File globbing
 
+from snip.stream import TriadLogger
+logger = TriadLogger(__name__)
 
 SHELVE_FILE_EXTENSIONS = ["json"]
 
@@ -215,10 +218,10 @@ class MainWindow(tk.Tk):
     def on_btn_replace(self, event=None):
         permutations = [
             os.path.join(
-                os.path.dirname(p), 
+                os.path.dirname(p),
                 os.path.splitext(p)[0] + "-alt" + os.path.splitext(p)[1]
             ) for p in self.current_filelist
-        ]   
+        ]
         results = tkit.MultiSelectDialog(
             self,
             ["Source: ", "Target: "],
@@ -257,7 +260,7 @@ class MainWindow(tk.Tk):
 
             if not os.path.isdir(target):
                 os.makedirs(target)
-            
+
             new_path = snip.filesystem.moveFileToDir(source, target, clobber=False)
 
             self.duplicates[self.current_hash].append(new_path)
@@ -286,13 +289,12 @@ class MainWindow(tk.Tk):
     # Load and select
 
     def loadDuplicates(self):
-        generator = self.db.generateDuplicateFilelists(bundleHash=True, threshhold=2, validate=False)
+        generator = self.db.generateDuplicateFilelists(bundleHash=True, threshhold=2, validate=True)
         self.duplicates = {}
         for (sorted_filenames, bundled_hash) in generator:
             self.duplicates[bundled_hash] = sorted_filenames
             # if len(self.duplicates.keys()) > 5:
             #     break
-
         self.hash_picker.configure(values=list(self.duplicates.keys()))
         self.hash_picker.current(0)
         self.progbar_prog.configure(maximum=len(list(self.duplicates.keys())))
@@ -300,7 +302,7 @@ class MainWindow(tk.Tk):
 
     def onFileSelect(self, *args):
         new_file = self.current_file.get()
-        # print("Switch file", new_file)
+        logger.debug("Switch file to '%s'", new_file)
         self.canvas.setFile(new_file)
         self.update_infobox()
 
@@ -312,8 +314,16 @@ class MainWindow(tk.Tk):
         for widget in self.file_picker.winfo_children():
             widget.destroy()
 
+        all_dupes_for_hash = self.duplicates[self.current_hash]
+
         self.current_file.set("")
-        self.current_filelist = list(filter(TRASH.isfile, self.duplicates[self.current_hash]))
+        self.current_filelist = list(filter(self.trash.isfile, all_dupes_for_hash))
+        self.current_filelist = sortDuplicatePaths(self.current_filelist)
+        logger.debug("\n" + explainSort(self.current_filelist))
+
+        logger.debug("Switched to hash '%s'", self.current_hash)
+        logger.debug("Known duplicates: %s", all_dupes_for_hash)
+        logger.debug("Shown duplicates: %s", self.current_filelist)
         # self.listbox_images.delete(0, self.listbox_images.size())
         for filename in self.current_filelist:
             tk.Radiobutton(
