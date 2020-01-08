@@ -5,8 +5,6 @@ import cv2
 
 import tkinter as tk
 
-from tkinter.simpledialog import Dialog
-
 from PIL import Image
 from tkinter import ttk
 
@@ -52,28 +50,6 @@ def parse_args():
         "--verbose", action="store_true",
         help="Print additional information.")
     return ap.parse_args()
-
-
-class Preloader(tk.Frame):
-
-    """Frame that manages the sidebar and user input
-    """
-
-    # Init and window management
-
-    def __init__(self, parent, *args, **kwargs):
-        """Args:
-            parent (tk): Tk parent widget
-            *args: Passthrough
-            **kwargs: Passthrough
-        """
-        tk.Frame.__init__(self, *args, **kwargs)
-
-        self.controller = parent
-        self.initwindow()
-
-    def initwindow(self):
-        pass
 
 
 class MainWindow(tk.Tk):
