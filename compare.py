@@ -237,25 +237,39 @@ class MainWindow(tk.Tk):
         if results:
             source, target = results
 
-            target = os.path.splitext(target)[0] + os.path.splitext(source)[1]
+            target_fixed = os.path.splitext(target)[0] + os.path.splitext(source)[1]
 
-            snip.filesystem.moveFileToFile(source, target, clobber=True)
+            snip.filesystem.moveFileToFile(source, target_fixed, clobber=True)
 
-            if target not in self.duplicates[self.current_hash]:
-                self.duplicates[self.current_hash].append(target)
+            if target_fixed != target:
+                self.trash.delete(target)
+                self.canvas.markCacheDirty(target)
+
+            if target_fixed not in self.duplicates[self.current_hash]:
+                self.duplicates[self.current_hash].append(target_fixed)
             self.canvas.markCacheDirty(source)
-            self.canvas.markCacheDirty(target)
+            self.canvas.markCacheDirty(target_fixed)
 
             self.onHashSelect()
         self.after(20, self.canvas.focus)
 
     def on_btn_move(self, event=None):
+        new_directory_choices = list(
+            set(os.path.dirname(p) for p in self.current_filelist).union(
+                os.path.dirname(os.path.dirname(p)) for p in self.current_filelist)
+        )
+
+        default_new_directory = os.path.dirname(self.current_filelist[1])
+
+        new_directory_choices.remove(default_new_directory)
+        new_directory_choices.insert(0, default_new_directory)
+
         results = tkit.MultiSelectDialog(
             self,
             ["Source: ", "New directory: "],
             [
-                self.current_filelist, 
-                list(set(os.path.dirname(p) for p in self.current_filelist)) + list(set(os.path.dirname(os.path.dirname(p)) for p in self.current_filelist))
+                self.current_filelist,
+                new_directory_choices
             ],
             stagger_lists=False
         ).results
