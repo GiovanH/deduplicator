@@ -91,6 +91,7 @@ class MainWindow(tk.Tk):
         if not shelvefile:
             return
         self.db = dupedb.db(shelvefile)
+        self.trash = snip.filesystem.Trash()
 
         self.current_hash = ""
 
@@ -102,6 +103,10 @@ class MainWindow(tk.Tk):
         self.current_filelist = []
 
         self.loadDuplicates()
+
+    def destroy(self):
+        self.trash.finish()
+        super().destroy()
 
     def initwindow(self):
 
@@ -204,14 +209,14 @@ class MainWindow(tk.Tk):
 
     # Process actions
     def on_btn_undo(self, event=None):
-        undopath = TRASH.undo()
+        undopath = self.trash.undo()
         if undopath:
             self.canvas.markCacheDirty(undopath)
         self.onHashSelect()
 
     def on_btn_delete(self, event=None):
         filepath = self.current_file.get()
-        TRASH.delete(filepath)
+        self.trash.delete(filepath)
         self.canvas.markCacheDirty(filepath)
         self.onHashSelect()
 
@@ -339,9 +344,7 @@ class MainWindow(tk.Tk):
 
 if __name__ == "__main__":
     try:
-        global TRASH
-        with snip.filesystem.Trash(verbose=True) as TRASH:
-            MainWindow()
+        MainWindow()
     except Exception:
         traceback.print_exc()
         os.abort()
