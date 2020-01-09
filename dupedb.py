@@ -18,7 +18,6 @@ import tqdm             # Progress bars
 import os.path          # isfile() method
 import traceback
 from PIL import Image   # Image IO libraries
-from os import sep
 # from json.decoder import JSONDecodeError
 from cv2 import error as cv2_error
 
@@ -69,33 +68,6 @@ def isVideo(filename):
         return False
 
 
-def imageSize(filename):
-    """
-    Args:
-        filename (str): Path to an image on disk
-    
-    Returns:
-        int: Pixels in image or 0 if file is not an image.
-    
-    Raises:
-        FileNotFoundError: Path is not on disk
-    """
-
-    try:
-        w, h = Image.open(filename).size
-        size = w * h
-        return size
-    except Image.DecompressionBombError:
-        return Image.MAX_IMAGE_PIXELS
-    except FileNotFoundError:
-        logger.error("File not found: " + filename)
-        raise FileNotFoundError(filename)
-    except OSError:
-        # print("WARNING! OS error with file: " + filename)
-        # traceback.print_exc()
-        return 0
-
-
 def getProcHash(file_path, hash_size):
     if isImage(file_path) or isVideo(file_path):
         if isImage(file_path):
@@ -115,6 +87,7 @@ def getProcHash(file_path, hash_size):
 class db():
 
     """Summary
+
     Attributes:
         bad_words (TYPE): Description
         fsizecache (TYPE): Description
@@ -122,8 +95,8 @@ class db():
         shelvefile (TYPE): Description
         sort_debug (TYPE): Description
     """
-    
-    def __init__(self, shelvefile, bad_words=[], good_words=[], progressbar_allowed=True):
+
+    def __init__(self, shelvefile, progressbar_allowed=True):
         """Summary
 
         Args:
@@ -135,8 +108,6 @@ class db():
 
         self.shelvefile = shelvefile
 
-        self.bad_words = bad_words
-        self.good_words = good_words
         self.progressbar_allowed = progressbar_allowed
 
         self.IScachetotal = self.IScachefails = 0

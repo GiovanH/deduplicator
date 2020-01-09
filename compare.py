@@ -15,7 +15,7 @@ import traceback
 from snip.tkit.contentcanvas import ContentCanvas
 
 import dupedb
-from dedupc import sortDuplicatePaths, explainSort
+from dedupc import makeSortTupleAll, explainSort
 
 # from PIL import Image
 # from tkinter import messagebox
@@ -91,7 +91,7 @@ class MainWindow(tk.Tk):
         if not shelvefile:
             return
         self.db = dupedb.db(shelvefile)
-        self.trash = snip.filesystem.Trash()
+        self.trash = snip.filesystem.Trash(verbose=True)
 
         self.current_hash = ""
 
@@ -346,7 +346,7 @@ class MainWindow(tk.Tk):
 
         self.current_file.set("")
         self.current_filelist = list(filter(self.trash.isfile, all_dupes_for_hash))
-        self.current_filelist = sortDuplicatePaths(self.current_filelist)
+        self.current_filelist = sorted(self.current_filelist, key=makeSortTupleAll)
         logger.debug("\n" + explainSort(self.current_filelist))
 
         logger.debug("Switched to hash '%s'", self.current_hash)
