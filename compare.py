@@ -129,8 +129,13 @@ class MainWindow(tk.Tk):
         self.bind("<Up>", self.prevImage)
 
         self.bind("<d>", self.on_btn_delete)
+        self.bind("1", self.on_btn_delete)
+        self.bind("<Delete>", self.on_btn_delete)
         self.bind("<a>", self.on_btn_undo)
+        self.bind("2", self.on_btn_delete)
+        self.bind("<Control-z>", self.on_btn_undo)
         self.bind("<m>", self.on_btn_move)
+        self.bind("<w>", self.on_btn_move)
         self.bind("<r>", self.on_btn_replace)
         self.bind("<c>", self.on_btn_concat)
 
@@ -240,6 +245,7 @@ class MainWindow(tk.Tk):
             target_fixed = os.path.splitext(target)[0] + os.path.splitext(source)[1]
 
             snip.filesystem.moveFileToFile(source, target_fixed, clobber=True)
+            logger.debug("replace '%s' --> '%s'", source, target)
 
             if target_fixed != target:
                 self.trash.delete(target)
@@ -281,6 +287,7 @@ class MainWindow(tk.Tk):
                 os.makedirs(target)
 
             new_path = snip.filesystem.moveFileToDir(source, target, clobber=False)
+            logger.debug("move '%s' --> '%s'", source, target)
 
             self.duplicates[self.current_hash].append(new_path)
 
@@ -300,6 +307,8 @@ class MainWindow(tk.Tk):
 
         if newFileName == ".":
             return
+
+        logger.debug("concatinating '%s' to '%s' with method '%s'", self.current_filelist, newFileName, concat)
 
         cv2.imwrite(newFileName, concat)
         self.duplicates[self.current_hash].append(newFileName)
@@ -321,7 +330,7 @@ class MainWindow(tk.Tk):
 
     def onFileSelect(self, *args):
         new_file = self.current_file.get()
-        logger.debug("Switch file to '%s'", new_file)
+        # logger.debug("Switch file to '%s'", new_file)
         self.canvas.setFile(new_file)
         self.update_infobox()
 
@@ -341,8 +350,8 @@ class MainWindow(tk.Tk):
         logger.debug("\n" + explainSort(self.current_filelist))
 
         logger.debug("Switched to hash '%s'", self.current_hash)
-        logger.debug("Known duplicates: %s", all_dupes_for_hash)
-        logger.debug("Shown duplicates: %s", self.current_filelist)
+        # ogger.debug("Known duplicates: %s", all_dupes_for_hash)
+        # logger.debug("Shown duplicates: %s", self.current_filelist)
         # self.listbox_images.delete(0, self.listbox_images.size())
         for filename in self.current_filelist:
             tk.Radiobutton(

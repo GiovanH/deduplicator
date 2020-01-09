@@ -43,7 +43,7 @@ def isImage(filename):
     """
     Args:
         filename (str): Path to a file
-    
+
     Returns:
         bool: True if the path points to an image, else False.
     """
@@ -58,7 +58,7 @@ def isVideo(filename):
     """
     Args:
         filename (str): Path to a file
-    
+
     Returns:
         bool: True if the path points to an video, else False.
     """
@@ -98,7 +98,7 @@ def imageSize(filename):
 
 def getProcHash(file_path, hash_size):
     if isImage(file_path) or isVideo(file_path):
-        if isImage(file_path):      
+        if isImage(file_path):
             image = Image.open(file_path)
         else:
             import cv2
@@ -112,13 +112,9 @@ def getProcHash(file_path, hash_size):
         return snip.hash.md5file(file_path)
 
 
-
-
-
 class db():
 
     """Summary
-    
     Attributes:
         bad_words (TYPE): Description
         fsizecache (TYPE): Description
@@ -129,7 +125,7 @@ class db():
     
     def __init__(self, shelvefile, bad_words=[], good_words=[], progressbar_allowed=True):
         """Summary
-        
+
         Args:
             shelvefile (TYPE): Description
             bad_words (list, optional): Description
@@ -149,7 +145,7 @@ class db():
         #     self.fsizecache = ju.load("sizes", default=dict())
         # except JSONDecodeError:
         #     print("Bad fscache file, resetting. ")
-        self.fsizecache = dict() 
+        self.fsizecache = dict()
 
     def updateRaw(self, old, new, hash):
         with ju.RotatingHandler(self.shelvefile, basepath="databases", readonly=False, default=dict()) as jdb:
@@ -160,7 +156,7 @@ class db():
 
     def purge(self, keeppaths=[]):
         """Remove hashes without files and files that no longer exist
-        
+
         Args:
             purge (bool, optional): Description
             paths (list, optional): Description
@@ -185,7 +181,7 @@ class db():
 
     def scanDirs(self, image_paths, recheck=False, hash_size=16):
         """Summary
-        
+
         Args:
             image_paths (list): List of paths to check (globbed)
             recheck (bool, optional): Don't skip known images
@@ -211,11 +207,11 @@ class db():
         # Threading
         def fingerprintImage(db, image_path):
             """Updates database db with phash data of image at image_path.
-            
+
             Args:
                 db (TYPE): Description
                 image_path (TYPE): Description
-            
+
             Returns:
                 TYPE: Description
             """
@@ -240,7 +236,7 @@ class db():
                 logger.debug("Error parsing image '%s'", image_path, exc_info=True)
                 with open(f"badfiles_{self.shelvefile}.txt", "a", newline='\n') as shellfile:
                     shellfile.write("{} \n".format(image_path))
-                    
+
                 return
             except OSError:
                 if os.path.isdir(image_path):
@@ -270,10 +266,10 @@ class db():
 
         # Only check needed images
         images_to_fingerprint = [
-            image_path for image_path in image_paths 
+            image_path for image_path in image_paths
             if (image_path not in known_paths) or recheck
         ]
-        
+
         # Progress and chunking
         num_images_to_fingerprint = len(images_to_fingerprint)
         chunk_size = 4000
@@ -290,12 +286,12 @@ class db():
 
     def generateDuplicateFilelists(self, bundleHash=False, threshhold=1, validate=True):
         """Generate lists of files which all have the same hash.
-        
+
         Args:
             bundleHash (bool, optional): Description
             threshhold (int, optional): Description
             progressbar_allowed (bool, optional): Description
-        
+
         Yields:
             tuple: (list, hash) OR
             list: File paths of duplicates
@@ -317,7 +313,7 @@ class db():
                     pbar.update()
 
                 filenames = db[key]
-                
+
                 if len(filenames) < threshhold:
                     continue
 
@@ -336,7 +332,7 @@ class db():
 
                 # If there is STILL more than one file with the hash:
                 if len(filenames) >= threshhold:
-                    logger.debug("Found {0} duplicate images for hash [{1}]".format(len(filenames), key))
+                    # logger.debug("Found {0} duplicate images for hash [{1}]".format(len(filenames), key))
                     if bundleHash:
                         yield (filenames, key)
                     else:
