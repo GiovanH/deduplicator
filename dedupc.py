@@ -14,6 +14,7 @@ import traceback
 from PIL import Image
 import snip.filesystem
 import dupedb
+from functools import lru_cache
 
 from snip.stream import TriadLogger
 logger = TriadLogger(__name__)
@@ -67,7 +68,7 @@ def makeImageSortTuple(x):
         -(os.path.getsize(x) / imageSize(x)),  # Density
     )
 
-
+@lru_cache()
 def makeDirSortTuple(x, good_words=[], bad_words=[]):
     assert type(good_words) == type(bad_words) == list
     upper = x.upper()
@@ -77,7 +78,7 @@ def makeDirSortTuple(x, good_words=[], bad_words=[]):
         -len(x[:x.rfind(os.path.sep)]),  # Deep paths good
     )
 
-
+@lru_cache()
 def makeNameSortTuple(x, good_words=[], bad_words=[]):
     assert type(good_words) == type(bad_words) == list
     name = os.path.split(x)[1].lower()
