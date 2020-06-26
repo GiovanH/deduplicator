@@ -4,6 +4,8 @@ from tkinter import filedialog
 import cv2
 
 import tkinter as tk
+from tkinter import messagebox
+from _tkinter import TclError
 
 from PIL import Image
 from tkinter import ttk
@@ -32,26 +34,30 @@ SHELVE_FILE_EXTENSIONS = ["json"]
 
 
 def parse_args():
-    """
-    Parse args from command line and return the namespace
+    """Parse args from command line and return the namespace.
 
-    Returns:
+    Returns
         TYPE: Description
     """
     ap = argparse.ArgumentParser()
 
     ap.add_argument(
         "shelvefile", help="Database name")
-    ap.add_argument(
-        "-l", "--list", action="store_true",
-        help="Show duplicate information on screen.")
 
     ap.add_argument(
-        "--debug", action="store_true",
-        help="Print debugging information for hashes.")
+        "--threshhold", default=2, type=int, help="Min number of duplicates")
     ap.add_argument(
-        "--verbose", action="store_true",
-        help="Print additional information.")
+        "--good_dirs", nargs='+', default=[],
+        help="Substrings in the path to penalize during file sorting.")
+    ap.add_argument(
+        "--bad_dirs", nargs='+', default=[],
+        help="Substrings in the path to prioritize during file sorting.")
+    ap.add_argument(
+        "--good_names", nargs='+', default=[],
+        help="Substrings in the path to penalize during file sorting.")
+    ap.add_argument(
+        "--bad_names", nargs='+', default=[],
+        help="Substrings in the path to prioritize during file sorting.")
     return ap.parse_args()
 
 
@@ -63,12 +69,26 @@ class MainWindow(tk.Tk):
 
             args = parse_args()
 
+            self.criteria = {
+                "good_names": args.good_names,
+                "bad_names": args.bad_names,
+                "good_dirs": args.good_dirs,
+                "bad_dirs": args.bad_dirs,
+            }
+
+            self.threshhold = args.threshhold
+
             self.initwindow()
 
-            if not args.shelvefile:
-                self.pick_and_open_shelvefile()
-            else:
-                self.open_shelvefile(args.shelvefile)
+            try:
+                if not args.shelvefile:
+                    self.pick_and_open_shelvefile()
+                else:
+                    self.open_shelvefile(args.shelvefile)
+            except TclError:
+                logger.error("No duplicate images in selection.")
+                self.destroy()
+                return
 
             # self.load_thread = threading.Thread(target=self.loadDuplicates)
             # self.load_thread.start()
@@ -99,7 +119,6 @@ class MainWindow(tk.Tk):
         self.current_file.set("")
         self.current_file.trace("w", self.onFileSelect)
 
-        self.photoImageCache = {}
         self.current_filelist = []
 
         self.loadDuplicates()
@@ -117,6 +136,8 @@ class MainWindow(tk.Tk):
 
         self.file_picker = tk.Frame(self, relief=tk.GROOVE)
         self.file_picker.grid(column=1, row=1, sticky="nsw")
+        # Minimium size here to avoid some expensive canvas resizing
+        self.grid_rowconfigure(1, minsize=82)
 
         self.canvas = ContentCanvas(self, takefocus=True)
         self.canvas.grid(column=1, row=2, sticky="nsew")
@@ -139,6 +160,9 @@ class MainWindow(tk.Tk):
         self.bind("<r>", self.on_btn_replace)
         self.bind("<c>", self.on_btn_concat)
 
+        self.bind("<s>", self.on_btn_superdelete)
+        self.bind("<0>", self.on_btn_superdelete)
+
         self.canvas.focus()
 
         self.toolbar = tk.Frame(self)
@@ -160,7 +184,7 @@ class MainWindow(tk.Tk):
         btn_delete = ttk.Button(self.toolbar, text="Delete", takefocus=False, command=self.on_btn_delete)
         btn_move = ttk.Button(self.toolbar, text="Move", takefocus=False, command=self.on_btn_move)
         btn_replace = ttk.Button(self.toolbar, text="Replace", takefocus=False, command=self.on_btn_replace)
-        btn_concat = ttk.Button(self.toolbar, text="Concatenate", takefocus=False, command=self.on_btn_concat)
+        self.btn_concat = btn_concat = ttk.Button(self.toolbar, text="Concatenate", takefocus=False, command=self.on_btn_concat)
 
         self.var_progbar_prog = tk.IntVar()
         self.progbar_prog = ttk.Progressbar(self.toolbar, variable=self.var_progbar_prog)
@@ -182,7 +206,7 @@ class MainWindow(tk.Tk):
             ratio = filesize / (w * h)
             newtext = f"{filename} [{frames}f]\n{filesize_str} [{w}x{h}px] [{ratio}]"
         except Exception:
-            newtext = f"{filename} \n{filesize}"
+            newtext = f"{filename} \n{filesize_str}"
             # traceback.print_exc()
         self.infobox.configure(text=newtext)
 
@@ -225,6 +249,28 @@ class MainWindow(tk.Tk):
         self.canvas.markCacheDirty(filepath)
         self.onHashSelect()
 
+    def on_btn_superdelete(self, event=None):
+        from dedupc import _doSuperDelete
+        
+        current_hash = self.hash_picker.get()
+        filelist = self.current_filelist
+
+        explanation = tk.StringVar(self)
+        _doSuperDelete(filelist, current_hash, self.trash.delete, criteria=self.criteria, mock=True, explain=explanation.set)
+
+        should_do = True or messagebox.askyesno(
+            title="Confirm",
+            message=f"Do superdelete operation?\n{explanation.get()}"
+        )
+        if should_do is True:
+            new_file = _doSuperDelete(filelist, current_hash, self.trash.delete, criteria=self.criteria, mock=False)
+            if new_file not in filelist:
+                self.duplicates[current_hash].append(new_file)
+        
+        for f in filelist:
+            self.canvas.markCacheDirty(f)
+        self.nextHash()
+
     def on_btn_replace(self, event=None):
         permutations = [
             os.path.join(
@@ -241,7 +287,7 @@ class MainWindow(tk.Tk):
 
         if results:
             source, target = results
-
+            
             target_fixed = os.path.splitext(target)[0] + os.path.splitext(source)[1]
 
             snip.filesystem.moveFileToFile(source, target_fixed, clobber=True)
@@ -265,7 +311,7 @@ class MainWindow(tk.Tk):
                 os.path.dirname(os.path.dirname(p)) for p in self.current_filelist)
         )
 
-        default_new_directory = os.path.dirname(self.current_filelist[1])
+        default_new_directory = os.path.dirname(self.current_filelist[min(1, len(self.current_filelist) - 1)])
 
         new_directory_choices.remove(default_new_directory)
         new_directory_choices.insert(0, default_new_directory)
@@ -300,9 +346,12 @@ class MainWindow(tk.Tk):
 
         concat = (cv2.vconcat(images) if width > height else cv2.hconcat(images))
 
+        current_file_dir, current_file = os.path.split(self.current_file.get())
+        simple_name, __ = os.path.splitext(current_file)
+
         newFileName = os.path.normpath(filedialog.asksaveasfilename(
-            initialdir=os.path.split(self.current_file.get())[0],
-            initialfile=f"{self.current_hash}_concat.jpg"
+            initialdir=current_file_dir,
+            initialfile=f"{simple_name}_concat.jpg"
         ))
 
         if newFileName == ".":
@@ -317,15 +366,17 @@ class MainWindow(tk.Tk):
     # Load and select
 
     def loadDuplicates(self):
-        generator = self.db.generateDuplicateFilelists(bundleHash=True, threshhold=2, validate=True)
+
+        generator = self.db.generateDuplicateFilelists(bundleHash=True, threshhold=self.threshhold, validate=True)
         self.duplicates = {}
-        for (sorted_filenames, bundled_hash) in generator:
-            self.duplicates[bundled_hash] = sorted_filenames
+        for (filelist, bundled_hash) in generator:
+            self.duplicates[bundled_hash] = filelist
             # if len(self.duplicates.keys()) > 5:
             #     break
-        self.hash_picker.configure(values=list(self.duplicates.keys()))
+        self.duplicate_hash_list = list(self.duplicates.keys())
+        self.hash_picker.configure(values=self.duplicate_hash_list)
         self.hash_picker.current(0)
-        self.progbar_prog.configure(maximum=len(list(self.duplicates.keys())))
+        self.progbar_prog.configure(maximum=len(self.duplicate_hash_list))
         self.onHashSelect()
 
     def onFileSelect(self, *args):
@@ -364,10 +415,24 @@ class MainWindow(tk.Tk):
             if not self.current_file.get():
                 self.current_file.set(filename)
 
+        try:
+            # Only enable if there are multiple unique images in the list
+            if len(set(Image.open(p).size for p in self.current_filelist)) == 1:
+                self.btn_concat.config(state="normal")
+            else:
+                self.btn_concat.config(state="disabled")
+        except Exception:
+            self.btn_concat.config(state="disabled")
+
+        next_image_hash = self.duplicate_hash_list[self.hash_picker.current() + 1]
+        self.canvas.preloadImage(self.duplicates[next_image_hash])
+
 
 if __name__ == "__main__":
     try:
         MainWindow()
+        print("Done")
+        os.abort()
     except Exception:
         traceback.print_exc()
         os.abort()

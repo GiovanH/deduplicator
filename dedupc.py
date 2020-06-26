@@ -3,6 +3,7 @@ import subprocess       # Magick runner
 import glob             # File globbing
 from time import time   # Time IDs
 import os.path          # isfile() method
+import re
 
 import colorama
 
@@ -55,7 +56,7 @@ def imageSize(filename):
     except OSError:
         # print("WARNING! OS error with file: " + filename)
         # traceback.print_exc()
-        return 0
+        return 1
 
 
 def makeImageSortTuple(x):
@@ -63,6 +64,7 @@ def makeImageSortTuple(x):
         -snip.image.framesInImage(x),  # High frames good
         -imageSize(x),  # High resolution good
         -os.path.getsize(x),  # High filesize good (if resolution is the same!)
+        -(os.path.getsize(x) / imageSize(x)),  # Density
     )
 
 
@@ -80,6 +82,7 @@ def makeNameSortTuple(x, good_words=[], bad_words=[]):
     assert type(good_words) == type(bad_words) == list
     name = os.path.split(x)[1].lower()
     return (
+        +int(bool(re.match(r"^[0-9a-f]{36}\.", name))),  # we do NOT like it when it's a hash
         -sum([name.count(w.lower()) for w in good_words]),  # Put images with good words higher
         +sum([name.count(w.lower()) for w in bad_words]),  # Put images with bad words lower
         -sum([name.count(w.lower()) for w in "-_ +"])  # Detailed filenames better
@@ -88,14 +91,14 @@ def makeNameSortTuple(x, good_words=[], bad_words=[]):
 
 def makeSortTupleAll(x, criteria={}):
     return (
-        makeImageSortTuple(x), 
-        makeDirSortTuple(x, good_words=criteria.get("good_dirs", []), bad_words=criteria.get("bad_dirs", [])), 
-        makeNameSortTuple(x, good_words=criteria.get("good_names", []), bad_words=criteria.get("bad_names", [])), 
-    )   
+        makeImageSortTuple(x),
+        makeDirSortTuple(x, good_words=criteria.get("good_dirs", []), bad_words=criteria.get("bad_dirs", [])),
+        makeNameSortTuple(x, good_words=criteria.get("good_names", []), bad_words=criteria.get("bad_names", [])),
+    )
 
 
 def explainSort(paths, criteria={}):
-    explanation = "image(-frames, -res, -size), path(-good, +bad, -depth), name(-good, +bad, -punctuation)"
+    explanation = "image(-frames, -res, -size, -density), path(-good, +bad, -depth), name(-good, +bad, -punctuation)"
     for path in paths:
         explanation += "\n{}\t| {} ".format(
             makeSortTupleAll(path, criteria),
@@ -192,7 +195,7 @@ def getDuplicatesToDelete(db, criteria, interactive=False):
                         goingtokeep = "All."
                         goingtodelete = []
                         continue
-                    if ans is "":
+                    if ans == "":
                         ans = 0
 
                     index = int(ans)
@@ -309,7 +312,7 @@ def renameFilesFromDb(db, mock=True, clobber=False):
             # try:
                 new_file_name = "{hash}{suffix}.{ext}".format(
                     hash=bundled_hash,
-                    suffix=("_{}".format(snip.hash.CRC32(old_file_path)) if len(filepaths) is not 1 else ""),
+                    suffix=("_{}".format(snip.hash.CRC32(old_file_path)) if len(filepaths) != 1 else ""),
                     ext=old_file_name.split('.')[-1]
                 )
                 if new_file_name != old_file_name:
@@ -372,7 +375,7 @@ def renameFilesFromPaths(filepaths, hash_size, mock=True, clobber=False):
                 proc_hash = dupedb.getProcHash(old_file_path, hash_size)
                 new_file_name = "{hash}{suffix}.{ext}".format(
                     hash=proc_hash,
-                    suffix=("_{}".format(snip.hash.CRC32(old_file_path)) if len(filepaths) is not 1 else ""),
+                    suffix=("_{}".format(snip.hash.CRC32(old_file_path)) if len(filepaths) != 1 else ""),
                     ext=old_file_name.split('.')[-1]
                 )
                 if new_file_name != old_file_name:
@@ -396,71 +399,82 @@ def renameFilesFromPaths(filepaths, hash_size, mock=True, clobber=False):
                 old=old, new=new))
 
 
+def _doSuperDelete(filepaths, bundled_hash, delete, criteria={}, mock=True, explain=logger.info):
+    image_rating = {f: makeImageSortTuple(f) for f in filepaths}
+    sorted_by_best_image = sorted(filepaths, key=image_rating.get)
+
+    # Determine best image, dir, name
+    best_image = sorted_by_best_image[0]
+    best_dir = sorted(filepaths, key=lambda x: makeDirSortTuple(x, criteria.get("good_dirs", []), criteria.get("bad_dirs", [])))[0]
+    best_name = sorted(filepaths, key=lambda x: makeNameSortTuple(x, criteria.get("good_names", []), criteria.get("bad_names", [])))[0]
+    logger.debug(explainSort(filepaths, criteria))
+    logger.debug("Best image: '%s'", best_image)
+    logger.debug("Best dir:   '%s'", os.path.split(best_dir)[0])
+    logger.debug("Best name:  '%s'", os.path.split(best_name)[1])
+
+    files_to_delete = sorted_by_best_image[1:]
+    assert best_image not in files_to_delete
+
+    # Construct best path
+    best_path = os.path.join(os.path.split(best_dir)[0], os.path.split(best_name)[1])
+    logger.debug("Best path:  '%s'", best_path)
+
+    best_path_fix = os.path.splitext(best_path)[0] + os.path.splitext(best_image)[1]
+    if best_path_fix not in filepaths:
+        i = 0
+        o = best_path_fix
+        while os.path.isfile(best_path_fix):
+            logger.warn("Path '%s' exists as another hash?", best_path_fix)
+            i += 1
+            best_path_fix = os.path.splitext(o)[0] + f"_{i}" + os.path.splitext(o)[1]
+
+    # Logic
+
+    explanation = ""
+
+    # If the best path alreaady has "a" best image, we don't need to move
+    if best_path_fix in filepaths and image_rating.get(best_path_fix) == image_rating.get(best_image):
+        logger.debug("Best path '%s' is already a best image", best_path)
+        files_to_delete.append(best_image)
+        best_image = best_path_fix
+        if best_image in files_to_delete:
+            # Can happen,
+            files_to_delete.remove(best_image)
+
+    # If the best image isn't at the best path, move
+    if best_image != best_path_fix:
+        # logger.debug("Should move file '%s'", best_image)
+        # logger.debug("              to '%s'", best_path_fix)
+        explanation += "\n\t" + "v " + best_image + "\n\t" + "> " + best_path_fix
+        if best_path_fix in files_to_delete:
+            logger.debug("Moving to deletion target '%s'! Must not trash!", best_path_fix)
+            files_to_delete.remove(best_path_fix)
+        if not mock:
+            snip.filesystem.moveFileToFile(best_image, best_path_fix, clobber=True, quiet=False)
+    else:
+        # Otherwise, keep
+        explanation += "\n\t" + "+ " + best_image
+
+    # Log deletions
+    if files_to_delete:
+        # logger.debug("Should delete files '%s'", files_to_delete)
+        explanation += "\n\t" + "\n\t".join(["- " + f for f in files_to_delete])
+        if not mock:
+            for path in files_to_delete:
+                delete(path)
+
+    # Log full explanation
+    explain(explanation)
+    return best_path_fix
+
+
 def superdelete(db, mock, criteria):
     with snip.filesystem.Trash() as trash:
-        for (filepaths, bundled_hash) in db.generateDuplicateFilelists(bundleHash=True, threshhold=2):
-
-            image_rating = {f: makeImageSortTuple(f) for f in filepaths}
-            sorted_by_best_image = sorted(filepaths, key=image_rating.get)
-
-            # Determine best image, dir, name
-            best_image = sorted_by_best_image[0]
-            best_dir = sorted(filepaths, key=lambda x: makeDirSortTuple(x, criteria.get("good_dirs"), criteria.get("bad_dirs")))[0]
-            best_name = sorted(filepaths, key=lambda x: makeNameSortTuple(x, criteria.get("good_names"), criteria.get("bad_names")))[0]
-            logger.debug(explainSort(filepaths, criteria))
-            logger.debug("Best image: '%s'", best_image)
-            logger.debug("Best dir:   '%s'", os.path.split(best_dir)[0])
-            logger.debug("Best name:  '%s'", os.path.split(best_name)[1])
-
-            files_to_delete = sorted_by_best_image[1:]
-            assert best_image not in files_to_delete
-
-            # Construct best path
-            best_path = os.path.join(os.path.split(best_dir)[0], os.path.split(best_name)[1])
-            logger.debug("Best path:  '%s'", best_path)
-
-            best_path_fix = os.path.splitext(best_path)[0] + os.path.splitext(best_image)[1]
-            if best_path_fix not in filepaths:
-                i = 0
-                o = best_path_fix
-                while os.path.isfile(best_path_fix):
-                    logger.warn("Path '%s' exists as another hash?", best_path_fix)
-                    i += 1
-                    best_path_fix = os.path.splitext(o)[0] + f"_{i}" + os.path.splitext(o)[1]
-
-            # Logic
-
-            explanation = ""
-
-            # If the best path alreaady has "a" best image, we don't need to move
-            if best_path_fix in filepaths and image_rating.get(best_path_fix) == image_rating.get(best_image):
-                best_image = best_path_fix
-
-            # If the best image isn't at the best path, move
-            if best_image != best_path_fix:
-                # logger.debug("Should move file '%s'", best_image)
-                # logger.debug("              to '%s'", best_path_fix)
-                explanation += "\n\t" + "v " + best_image + "\n\t" + "> " + best_path_fix
-                if best_path_fix in files_to_delete:
-                    logger.debug("Moving to deletion target '%s'! Must not trash!", best_path_fix)
-                    files_to_delete.remove(best_path_fix)
-            else:
-                # Otherwise, keep
-                explanation += "\n\t" + "+ " + best_image
-
-            # Log deletions
-            if files_to_delete:
-                # logger.debug("Should delete files '%s'", files_to_delete)
-                explanation += "\n\t" + "\n\t".join(["- " + f for f in files_to_delete])
-
-            # Log full explanation
-            logger.info(explanation)
-
-            # Process operations
-            if not mock:
-                for path in files_to_delete:
-                    trash.delete(path)
-                snip.filesystem.moveFileToFile(best_image, best_path_fix, clobber=False, quiet=False)
+        for (filepaths, bundled_hash) in db.generateDuplicateFilelists(bundleHash=True, threshhold=2, validate=True):
+            try:
+                _doSuperDelete(filepaths, bundled_hash, trash.delete, criteria, mock)
+            except OSError:
+                logger.error("Couldn't finish delete for hash '%s'", bundled_hash, exc_info=True)
 
 
 def parse_args():
@@ -573,7 +587,7 @@ def main():
         # File handling and fallbacks
 
         if args.purge:
-            db.prune(keeppaths=image_paths)
+            db.purge(keeppaths=image_paths)
 
         logger.info("Fingerprinting")
         db.scanDirs(image_paths, recheck=args.recheck, hash_size=args.hashsize)

@@ -1,17 +1,9 @@
-"""Summary
+"""Tools for handling a database that detects duplicate and similar files
 
 Attributes:
-    VALID_IMAGE_EXTENSIONS (list): Description
+    logger: logging.logger instance
+    VALID_IMAGE_EXTENSIONS (list): List of extensions to consider "images"
 
-Deleted Attributes:
-    BAD_WORDS (list): List of substrings to avoid while sorting
-    DEBUG_FILE_EXISTS (bool): Description
-    GLOBAL_QUIET_DEFAULT (bool): Description
-    HASHDEBUG (bool): Description
-    IScachetotal (TYPE): Description
-    PROGRESSBAR_ALLOWED (bool): Description
-    SHELVE_FILE_EXTENSIONS (list): Description
-    SORTDEBUG (bool): Description
 """
 import imagehash        # Perceptual image hashing
 import tqdm             # Progress bars
@@ -23,8 +15,8 @@ from cv2 import error as cv2_error
 
 # import shelve           # Persistant data storage
 import snip.jfileutil as ju
-import snip
 import snip.image
+import snip.data
 from snip.loom import Spool
 import itertools
 
@@ -32,17 +24,19 @@ from snip.stream import TriadLogger
 logger = TriadLogger(__name__)
 
 # DEBUG_FILE_EXISTS = False
-VALID_IMAGE_EXTENSIONS = ["gif", "jpg", "png", "jpeg", "bmp"]
+VALID_IMAGE_EXTENSIONS = ["gif", "jpg", "png", "jpeg", "bmp", "jfif"]
 
 # Image.MAX_IMAGE_PIXELS = 148306125
 Image.MAX_IMAGE_PIXELS = 160000000
+
+
 
 
 def isImage(filename):
     """
     Args:
         filename (str): Path to a file
-
+    
     Returns:
         bool: True if the path points to an image, else False.
     """
@@ -57,7 +51,7 @@ def isVideo(filename):
     """
     Args:
         filename (str): Path to a file
-
+    
     Returns:
         bool: True if the path points to an video, else False.
     """
@@ -69,6 +63,18 @@ def isVideo(filename):
 
 
 def getProcHash(file_path, hash_size):
+    """Gets a hash for a file. There are no requirements for the type of file.
+    
+    Args:
+        file_path (TYPE): The full path to a file.
+        hash_size (int): hash_size parameter for imagehash.dhash
+    
+    Returns:
+        str: 
+        If the file is an image, this will return the procedural hash.
+        If the file is a video, this will return the procedural hash of the first frame.
+        If the file is anything else, this returns the md5 hash of the file.
+    """
     if isImage(file_path) or isVideo(file_path):
         if isImage(file_path):
             image = Image.open(file_path)
@@ -86,39 +92,27 @@ def getProcHash(file_path, hash_size):
 
 class db():
 
-    """Summary
-
+    """The database object.
+    
     Attributes:
-        bad_words (TYPE): Description
-        fsizecache (TYPE): Description
-        IScachetotal (TYPE): Description
-        shelvefile (TYPE): Description
-        sort_debug (TYPE): Description
+        progressbar_allowed (bool): Shows a progress bar for jobs.
+        shelvefile (str): The name of the shelved database file
+    
     """
 
     def __init__(self, shelvefile, progressbar_allowed=True):
-        """Summary
-
-        Args:
-            shelvefile (TYPE): Description
-            bad_words (list, optional): Description
-            sort_debug (bool, optional): Description
-        """
         super(db, self).__init__()
-
         self.shelvefile = shelvefile
-
         self.progressbar_allowed = progressbar_allowed
 
-        self.IScachetotal = self.IScachefails = 0
-
-        # try:
-        #     self.fsizecache = ju.load("sizes", default=dict())
-        # except JSONDecodeError:
-        #     print("Bad fscache file, resetting. ")
-        self.fsizecache = dict()
-
     def updateRaw(self, old, new, hash):
+        """Unused?
+        
+        Args:
+            old (list): The old filepaths
+            new (list): The new filepaths
+            hash (TYPE): The hash
+        """
         with ju.RotatingHandler(self.shelvefile, basepath="databases", readonly=False, default=dict()) as jdb:
             dbentry = jdb.get(hash, [])
             dbentry.remove(old)
@@ -126,11 +120,10 @@ class db():
             jdb[hash] = dbentry
 
     def purge(self, keeppaths=[]):
-        """Remove hashes without files and files that no longer exist
-
+        """Remove hashes without files and files that are not in keeppaths
+        
         Args:
-            purge (bool, optional): Description
-            paths (list, optional): Description
+            keeppaths (list, optional): Whitelist of paths that can remain
         """
         print("Cleaning and verifying database")
 
@@ -146,17 +139,18 @@ class db():
 
         with ju.RotatingHandler(self.shelvefile, basepath="databases", readonly=False, default=dict()) as jdb:
             with Spool(80, "Cleanup") as spool:
-                for key in list(jdb.keys()):
+                for key in set(jdb.keys()):
                     spool.enqueue(_pruneKey, (jdb, key,))
                 spool.finish()
 
-    def scanDirs(self, image_paths, recheck=False, hash_size=16):
-        """Summary
-
+    def scanDirs(self, image_paths, recheck=False, hash_size=16, check_neighbors=False):
+        """Scans image paths and updates the database
+        
         Args:
             image_paths (list): List of paths to check (globbed)
             recheck (bool, optional): Don't skip known images
             hash_size (int, optional): Hash size
+            check_neighbors (bool, optional): Description
         """
         # Resolve glob to image paths
 
@@ -178,17 +172,22 @@ class db():
         # Threading
         def fingerprintImage(db, image_path):
             """Updates database db with phash data of image at image_path.
-
+            
             Args:
                 db (TYPE): Description
                 image_path (TYPE): Description
-
+            
             Returns:
                 TYPE: Description
+            
+            Raises:
+                NotImplementedError: Description
             """
 
             # Print statements go to the spool
             # Logger still logs debug statements
+            if check_neighbors:
+                raise NotImplementedError
 
             # load the image and compute the difference hash
             try:
@@ -257,15 +256,18 @@ class db():
 
     def generateDuplicateFilelists(self, bundleHash=False, threshhold=1, validate=True):
         """Generate lists of files which all have the same hash.
-
+        
         Args:
             bundleHash (bool, optional): Description
             threshhold (int, optional): Description
-            progressbar_allowed (bool, optional): Description
-
+            validate (bool, optional): Description
+        
         Yields:
             tuple: (list, hash) OR
             list: File paths of duplicates
+        
+        Deleted Parameters:
+            progressbar_allowed (bool, optional): Description
         """
         logger.info("Generating information about duplicate images from database")
 
@@ -290,11 +292,14 @@ class db():
 
                 # Remove files that no longer exist and remove duplicate filenames
                 if validate:
-                    db[key] = filenames = list(filter(os.path.isfile, set(db[key])))
+                    filenames = list(filter(os.path.isfile, set(filenames)))
 
                     for f1, f2 in itertools.combinations(filenames, 2):
                         if os.path.samefile(f1, f2):
+                            print(f"File {f1} is a samefile duplicate of {f2}")
                             filenames.remove(f2)
+
+                    db[key] = filenames
 
                     # Remove hashes with no files
                     if len(db[key]) == 0:
