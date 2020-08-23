@@ -5,9 +5,6 @@ from time import time   # Time IDs
 import os.path          # isfile() method
 import re
 
-import colorama
-
-from send2trash import send2trash
 import snip
 
 import traceback
@@ -20,6 +17,7 @@ from snip.stream import TriadLogger
 logger = TriadLogger(__name__)
 
 SHELVE_FILE_EXTENSIONS = ["json"]
+EMPTY_SET = frozenset()
 
 
 def deleteFiles(filestodelete):
@@ -69,8 +67,7 @@ def makeImageSortTuple(x):
     )
 
 @lru_cache()
-def makeDirSortTuple(x, good_words=[], bad_words=[]):
-    assert type(good_words) == type(bad_words) == list
+def makeDirSortTuple(x, good_words=EMPTY_SET, bad_words=EMPTY_SET):
     upper = x.upper()
     return (
         -sum([upper.count(w.upper()) for w in good_words]),  # Put images with good words higher
@@ -79,8 +76,7 @@ def makeDirSortTuple(x, good_words=[], bad_words=[]):
     )
 
 @lru_cache()
-def makeNameSortTuple(x, good_words=[], bad_words=[]):
-    assert type(good_words) == type(bad_words) == list
+def makeNameSortTuple(x, good_words=EMPTY_SET, bad_words=EMPTY_SET):
     name = os.path.split(x)[1].lower()
     return (
         +int(bool(re.match(r"^[0-9a-f]{36}\.", name))),  # we do NOT like it when it's a hash
@@ -93,8 +89,8 @@ def makeNameSortTuple(x, good_words=[], bad_words=[]):
 def makeSortTupleAll(x, criteria={}):
     return (
         makeImageSortTuple(x),
-        makeDirSortTuple(x, good_words=criteria.get("good_dirs", []), bad_words=criteria.get("bad_dirs", [])),
-        makeNameSortTuple(x, good_words=criteria.get("good_names", []), bad_words=criteria.get("bad_names", [])),
+        makeDirSortTuple(x, good_words=criteria.get("good_dirs", EMPTY_SET), bad_words=criteria.get("bad_dirs", EMPTY_SET)),
+        makeNameSortTuple(x, good_words=criteria.get("good_names", EMPTY_SET), bad_words=criteria.get("bad_names", EMPTY_SET)),
     )
 
 
@@ -406,8 +402,8 @@ def _doSuperDelete(filepaths, bundled_hash, delete, criteria={}, mock=True, expl
 
     # Determine best image, dir, name
     best_image = sorted_by_best_image[0]
-    best_dir = sorted(filepaths, key=lambda x: makeDirSortTuple(x, criteria.get("good_dirs", []), criteria.get("bad_dirs", [])))[0]
-    best_name = sorted(filepaths, key=lambda x: makeNameSortTuple(x, criteria.get("good_names", []), criteria.get("bad_names", [])))[0]
+    best_dir = sorted(filepaths, key=lambda x: makeDirSortTuple(x, criteria.get("good_dirs", EMPTY_SET), criteria.get("bad_dirs", EMPTY_SET)))[0]
+    best_name = sorted(filepaths, key=lambda x: makeNameSortTuple(x, criteria.get("good_names", EMPTY_SET), criteria.get("bad_names", EMPTY_SET)))[0]
     logger.debug(explainSort(filepaths, criteria))
     logger.debug("Best image: '%s'", best_image)
     logger.debug("Best dir:   '%s'", os.path.split(best_dir)[0])
@@ -446,7 +442,7 @@ def _doSuperDelete(filepaths, bundled_hash, delete, criteria={}, mock=True, expl
     if best_image != best_path_fix:
         # logger.debug("Should move file '%s'", best_image)
         # logger.debug("              to '%s'", best_path_fix)
-        explanation += "\n\t" + "v " + best_image + "\n\t" + "> " + best_path_fix
+        explanation += "\n\t" + "> " + best_path_fix + "\n\t" + "^ " + best_image
         if best_path_fix in files_to_delete:
             logger.debug("Moving to deletion target '%s'! Must not trash!", best_path_fix)
             files_to_delete.remove(best_path_fix)
@@ -547,6 +543,9 @@ def parse_args():
         "--noprogress", action="store_true",
         help="Disallow progress bars.")
     ap.add_argument(
+        "--strict", action="store_true",
+        help="Base hash on the entire body of images and animations")
+    ap.add_argument(
         "--purge", action="store_true",
         help="Delete records of files not currently seen, even if they're in the database.")
     ap.add_argument(
@@ -560,10 +559,10 @@ def parse_args():
 def main():
     args = parse_args()
     criteria = {
-        "good_names": args.good_names,
-        "bad_names": args.bad_names,
-        "good_dirs": args.good_dirs,
-        "bad_dirs": args.bad_dirs,
+        "good_names": frozenset(args.good_names),
+        "bad_names": frozenset(args.bad_names),
+        "good_dirs": frozenset(args.good_dirs),
+        "bad_dirs": frozenset(args.bad_dirs),
     }
 
     shelvefile = "{0}.s{1}".format(args.shelve, args.hashsize)
@@ -591,7 +590,7 @@ def main():
             db.purge(keeppaths=image_paths)
 
         logger.info("Fingerprinting")
-        db.scanDirs(image_paths, recheck=args.recheck, hash_size=args.hashsize)
+        db.scanDirs(image_paths, recheck=args.recheck, hash_size=args.hashsize, strict_mode=args.strict)
 
     if args.prune:
         list(db.generateDuplicateFilelists(threshhold=1, validate=True))

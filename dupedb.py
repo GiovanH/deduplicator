@@ -19,19 +19,19 @@ import snip.image
 import snip.data
 from snip.loom import Spool
 import itertools
+from functools import lru_cache
 
 from snip.stream import TriadLogger
 logger = TriadLogger(__name__)
 
 # DEBUG_FILE_EXISTS = False
-VALID_IMAGE_EXTENSIONS = ["gif", "jpg", "png", "jpeg", "bmp", "jfif"]
+VALID_IMAGE_EXTENSIONS = {"gif", "jpg", "png", "jpeg", "bmp", "jfif"}
 
 # Image.MAX_IMAGE_PIXELS = 148306125
 Image.MAX_IMAGE_PIXELS = 160000000
 
 
-
-
+@lru_cache()
 def isImage(filename):
     """
     Args:
@@ -47,6 +47,7 @@ def isImage(filename):
         return False
 
 
+@lru_cache()
 def isVideo(filename):
     """
     Args:
@@ -56,13 +57,13 @@ def isVideo(filename):
         bool: True if the path points to an video, else False.
     """
     try:
-        return filename.split(".")[-1].lower() in ["webm", "mp4"]
+        return filename.split(".")[-1].lower() in {"webm", "mp4"}
     except IndexError:
         # No extension
         return False
 
 
-def getProcHash(file_path, hash_size):
+def getProcHash(file_path, hash_size, strict=False):
     """Gets a hash for a file. There are no requirements for the type of file.
     
     Args:
@@ -75,17 +76,25 @@ def getProcHash(file_path, hash_size):
         If the file is a video, this will return the procedural hash of the first frame.
         If the file is anything else, this returns the md5 hash of the file.
     """
-    if isImage(file_path) or isVideo(file_path):
-        if isImage(file_path):
-            image = Image.open(file_path)
-        else:
-            import cv2
-            capture = cv2.VideoCapture(file_path)
-            capture.grab()
-            flag, frame = capture.retrieve()
-            frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-            image = Image.fromarray(frame)
+    if isImage(file_path):
+        if strict and snip.image.framesInImage(file_path) > 1:
+            return snip.hash.md5file(file_path)
+
+        image = Image.open(file_path)
         return str(imagehash.dhash(image, hash_size=hash_size))
+
+    elif isVideo(file_path):
+        if strict:
+            return snip.hash.md5file(file_path)
+
+        import cv2
+        capture = cv2.VideoCapture(file_path)
+        capture.grab()
+        flag, frame = capture.retrieve()
+        frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        image = Image.fromarray(frame)
+        return str(imagehash.dhash(image, hash_size=hash_size))
+
     else:
         return snip.hash.md5file(file_path)
 
@@ -113,7 +122,7 @@ class db():
             new (list): The new filepaths
             hash (TYPE): The hash
         """
-        with ju.RotatingHandler(self.shelvefile, basepath="databases", readonly=False, default=dict()) as jdb:
+        with ju.RotatingHandler(self.shelvefile, basepath="databases", default={}) as jdb:
             dbentry = jdb.get(hash, [])
             dbentry.remove(old)
             dbentry.append(new)
@@ -125,25 +134,17 @@ class db():
         Args:
             keeppaths (list, optional): Whitelist of paths that can remain
         """
-        print("Cleaning and verifying database")
+        keeppaths = set(keeppaths)
+        print("Removing files not in provided globs")
 
-        def _pruneKey(dictionary, key):
-            # Remove files that no longer exist
-            dictionary[key] = list(set(filter(lambda p: p in keeppaths, dictionary[key])))
+        with ju.RotatingHandler(self.shelvefile, basepath="databases", default={}) as jdb:
+            for key in set(jdb.keys()):
+                cached_paths = jdb[key]
+                good_file_set = set(filter(lambda p: p in keeppaths, cached_paths))
+                if good_file_set != set(jdb[key]):
+                    jdb[key] = list(good_file_set)
 
-            # Remove hashes with no files
-            if len(dictionary[key]) == 0:
-                dictionary.pop(key)
-
-            return
-
-        with ju.RotatingHandler(self.shelvefile, basepath="databases", readonly=False, default=dict()) as jdb:
-            with Spool(80, "Cleanup") as spool:
-                for key in set(jdb.keys()):
-                    spool.enqueue(_pruneKey, (jdb, key,))
-                spool.finish()
-
-    def scanDirs(self, image_paths, recheck=False, hash_size=16, check_neighbors=False):
+    def scanDirs(self, image_paths, recheck=False, hash_size=16, strict_mode=False):
         """Scans image paths and updates the database
         
         Args:
@@ -162,7 +163,7 @@ class db():
 
         if not recheck:
             print(self.shelvefile)
-            with ju.RotatingHandler(self.shelvefile, default=dict(), basepath="databases", readonly=True) as jdb:
+            with ju.RotatingHandler(self.shelvefile, default={}, basepath="databases", readonly=True) as jdb:
                 known_paths = set(snip.data.flatList(jdb.values()))
 
         # Prune the shelve file
@@ -186,30 +187,26 @@ class db():
 
             # Print statements go to the spool
             # Logger still logs debug statements
-            if check_neighbors:
-                raise NotImplementedError
-
             # load the image and compute the difference hash
             try:
-                proc_hash = getProcHash(image_path, hash_size)
+                proc_hash = getProcHash(image_path, hash_size, strict=strict_mode)
                 # Compress:
                 # proc_hash = proc_hash.decode("hex").encode("base64")
 
-            except FileNotFoundError:
-                print("File not found '%s'" % image_path)
-                logger.debug("File not found '%s'", image_path)
-                # traceback.print_exc()
+            except MemoryError:
+                logger.error("Not enough memory to handle image '%s'", image_path)
                 return
-            except (ValueError, cv2_error):
-                print("Error parsing image '%s'" % image_path)
-                print(traceback.format_exc())
-                logger.debug("Error parsing image '%s'", image_path, exc_info=True)
+            except FileNotFoundError:
+                logger.error("File not found '%s'", image_path)
+                return
+            except (ValueError, cv2_error, SyntaxError):
+                logger.error("Error parsing image '%s'", image_path, exc_info=True)
                 with open(f"badfiles_{self.shelvefile}.txt", "a", newline='\n') as shellfile:
                     shellfile.write("{} \n".format(image_path))
-
                 return
             except OSError:
                 if os.path.isdir(image_path):
+                    logger.debug("Image '%s' is a directory", image_path, exc_info=False)
                     return
 
                 print("File '%s' is corrupt or invalid." % image_path)
@@ -217,6 +214,10 @@ class db():
                 with open(f"badfiles_{self.shelvefile}.txt", "a", newline='\n') as shellfile:
                     shellfile.write("{} \n".format(image_path))
 
+                return
+
+            if int(proc_hash, base=16) == 0:
+                logger.warning("File: '%s' has zero hash", image_path)
                 return
 
             filename = image_path  # [image_path.rfind("/") + 1:]
@@ -227,6 +228,8 @@ class db():
             if filename not in db.get(proc_hash, []):
                 logger.debug("New file: '%s' w/ hash '%s'", image_path, proc_hash)
                 db[proc_hash] = db.get(proc_hash, []) + [filename]
+            else:
+                logger.debug("File: '%s' w/ hash '%s' already in db", image_path, proc_hash)
 
         # Reset forcedelete script
         try:
@@ -235,21 +238,30 @@ class db():
             pass
 
         # Only check needed images
-        images_to_fingerprint = [
+        image_paths = set(image_paths)
+
+        images_to_fingerprint = {
             image_path for image_path in image_paths
             if (image_path not in known_paths) or recheck
-        ]
+        }
 
         # Progress and chunking
         num_images_to_fingerprint = len(images_to_fingerprint)
-        chunk_size = 4000
+        chunk_size = 1000
 
         from math import ceil
         total_chunks = ceil(num_images_to_fingerprint / chunk_size)
 
         logger.info("Fingerprinting {} images with hash size {}".format(num_images_to_fingerprint, hash_size))
-        for (i, image_path_chunk) in enumerate(snip.data.chunk(images_to_fingerprint, chunk_size)):
-            with ju.RotatingHandler(self.shelvefile, default=dict(), basepath="databases", readonly=False) as jdb:
+
+        fingerprinters = tqdm.tqdm(
+            iterable=enumerate(snip.data.chunk(images_to_fingerprint, chunk_size)),
+            desc="All chunks",
+            unit="chunk"
+        )
+
+        for (i, image_path_chunk) in fingerprinters:
+            with ju.RotatingHandler(self.shelvefile, default={}, basepath="databases") as jdb:
                 with snip.loom.Spool(10, name="Fingerprint {}/{}".format(i + 1, total_chunks), belay=True) as fpSpool:
                     for image_path in image_path_chunk:
                         fpSpool.enqueue(target=fingerprintImage, args=(jdb, image_path,))
@@ -292,6 +304,11 @@ class db():
 
                 # Remove files that no longer exist and remove duplicate filenames
                 if validate:
+                    if int(key, base=16) == 0:
+                        print(f"Key '{key}' is a zero hash.")
+                        db.pop(key)
+                        continue
+
                     filenames = list(filter(os.path.isfile, set(filenames)))
 
                     for f1, f2 in itertools.combinations(filenames, 2):
