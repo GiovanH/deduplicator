@@ -19,6 +19,12 @@ from snip.tkit.contentcanvas import ContentCanvas
 import dupedb
 from dedupc import makeSortTupleAll, explainSort
 
+import functools
+import re
+from pathlib import Path
+
+match_exts = [".jpg", ".gif", ".webm", ".png"]
+
 # from PIL import Image
 # from tkinter import messagebox
 # from snip import tkit
@@ -59,6 +65,70 @@ def parse_args():
         "--bad_names", nargs='+', default=[],
         help="Substrings in the path to prioritize during file sorting.")
     return ap.parse_args()
+
+def getSeriesInfo(name):
+    from collections import namedtuple
+    patterns = [
+        (r"_0(\d)_1$",    "_0<#>_1"),    # Patreon
+        (r"o(\d+)_1280$", "o<#>_1280"),  # Tumblr
+        (r"_(\d+)$",      "_<#>"),
+        (r"\((\d+)\)$",   "(<#>)"),
+        (r"_p(\d+)$",     "_p<#>"),
+        (r"_img(\d+)$",   "_img<#>"),
+        (r"-img(\d+)$",   "-img<#>"),
+        (r"-alt(\d*)$",   "-alt<#>"),
+        (r" edit()$",     " edit<#>"),
+    ]
+    for (pattern, stylem) in patterns:
+        match = re.search(pattern, name)
+        if match:
+            try:
+                i = int(match.groups()[0])
+            except ValueError:
+                i = 1
+            if i > 1000:
+                continue
+            style = re.sub(pattern, stylem, name)
+            return namedtuple('SeriesInfo', ["no", "style"])(i, style)
+
+    return None
+
+def altPathOf(path):
+    dirname = os.path.dirname(path)
+    stem, ext = os.path.splitext(path)
+
+    seriesinfo = getSeriesInfo(stem)
+    if seriesinfo:
+        i = seriesinfo.no
+        style = seriesinfo.style
+    else:
+        i = 1
+        style = stem + "_<#>"
+
+    working_path = os.path.join(
+        dirname,
+        f"{style.replace('<#>', str(i))}{ext}"
+    )
+    while working_path == path or os.path.isfile(working_path):
+        i += 1
+        working_path = os.path.join(
+            dirname,
+            f"{style.replace('<#>', str(i))}{ext}"
+        )
+        assert i < 100
+    return working_path
+
+def findBaseFileForPath(path):
+    name = os.path.splitext(path)[0]
+
+    seriesinfo = getSeriesInfo(name)
+    if not seriesinfo:
+        return False
+
+    i, style = seriesinfo
+    base_name = style.replace("<#>", str(i - 1))
+    return any(base_name != name and os.path.isfile(base_name + ext)
+        for ext in match_exts)
 
 
 class MainWindow(tk.Tk):
@@ -389,6 +459,17 @@ class MainWindow(tk.Tk):
         generator = self.db.generateDuplicateFilelists(bundleHash=True, threshhold=self.threshhold, validate=True)
         self.duplicates = {}
         for (filelist, bundled_hash) in generator:
+            if self.opt_hidealts_var.get():
+                # noextlist = {os.path.splitext(p)[0] for p in filelist}
+                for filename in filelist.copy():
+                    base_name = findBaseFileForPath(filename)
+                    if base_name:
+                        logger.info(f"{filename} has base file in {base_name}")
+                        filelist.remove(filename)
+                    # else:
+                    #     logger.info(f"{filename} has NO base file in {base_names}")
+                if len(filelist) < self.threshhold:
+                    continue
             self.duplicates[bundled_hash] = filelist
             # if len(self.duplicates.keys()) > 5:
             #     break
