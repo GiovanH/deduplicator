@@ -70,10 +70,10 @@ class MainWindow(tk.Tk):
             args = parse_args()
 
             self.criteria = {
-                "good_names": args.good_names,
-                "bad_names": args.bad_names,
-                "good_dirs": args.good_dirs,
-                "bad_dirs": args.bad_dirs,
+                "good_names": frozenset(args.good_names),
+                "bad_names": frozenset(args.bad_names),
+                "good_dirs": frozenset(args.good_dirs),
+                "bad_dirs": frozenset(args.bad_dirs),
             }
 
             self.threshhold = args.threshhold
@@ -186,11 +186,19 @@ class MainWindow(tk.Tk):
         btn_replace = ttk.Button(self.toolbar, text="Replace", takefocus=False, command=self.on_btn_replace)
         self.btn_concat = btn_concat = ttk.Button(self.toolbar, text="Concatenate", takefocus=False, command=self.on_btn_concat)
 
-        self.var_progbar_prog = tk.IntVar()
-        self.progbar_prog = ttk.Progressbar(self.toolbar, variable=self.var_progbar_prog)
+        self.opt_hidealts_var = tk.BooleanVar(value=False)
+        opt_hidealts = ttk.Checkbutton(self.toolbar, text="Hide known alts", variable=self.opt_hidealts_var)
+        self.opt_hidealts_var.trace("w", lambda *a: self.loadDuplicates())
 
-        for btn in [btn_open, btn_delete, btn_move, btn_replace, btn_concat, self.progbar_prog]:
+        self.var_progbar_seek = tk.IntVar()
+        self.progbar_seek = ttk.Scale(self.toolbar, takefocus=False, variable=self.var_progbar_seek, command=self.on_adjust_seek)
+
+        for btn in [btn_open, btn_delete, btn_move, btn_replace, btn_concat, opt_hidealts, self.progbar_seek]:
             btn.grid(row=rowInOrder(), sticky="ew")
+
+    def on_adjust_seek(self, event):
+        self.hash_picker.current(newindex=int(float(event)))
+        self.onHashSelect()
 
     def update_infobox(self):
         filepath = self.current_file.get()
@@ -237,6 +245,16 @@ class MainWindow(tk.Tk):
         self.onHashSelect()
 
     # Process actions
+
+    def currentFilelistRelative(self):
+        filelist = self.current_filelist
+        current_index = self.current_filelist.index(self.current_file.get())
+        rotated = filelist[current_index:] + filelist[:current_index]
+        # logger.debug(f"Rotating filelist by {current_index}")
+        # logger.debug(filelist)
+        # logger.debug(rotated)
+        return rotated
+
     def on_btn_undo(self, event=None):
         undopath = self.trash.undo()
         if undopath:
@@ -251,7 +269,7 @@ class MainWindow(tk.Tk):
 
     def on_btn_superdelete(self, event=None):
         from dedupc import _doSuperDelete
-        
+
         current_hash = self.hash_picker.get()
         filelist = self.current_filelist
 
@@ -266,32 +284,31 @@ class MainWindow(tk.Tk):
             new_file = _doSuperDelete(filelist, current_hash, self.trash.delete, criteria=self.criteria, mock=False)
             if new_file not in filelist:
                 self.duplicates[current_hash].append(new_file)
-        
+
         for f in filelist:
             self.canvas.markCacheDirty(f)
         self.nextHash()
 
     def on_btn_replace(self, event=None):
+        current_filelist_relative = self.currentFilelistRelative()
         permutations = [
-            os.path.join(
-                os.path.dirname(p),
-                os.path.splitext(p)[0] + "-alt" + os.path.splitext(p)[1]
-            ) for p in self.current_filelist
+            altPathOf(p) for p in current_filelist_relative
         ]
+        target_paths = [current_filelist_relative, permutations + current_filelist_relative]
         results = tkit.MultiSelectDialog(
             self,
             ["Source: ", "Target: "],
-            [self.current_filelist, self.current_filelist + permutations],
+            target_paths,
             stagger_lists=True
         ).results
 
         if results:
             source, target = results
-            
+
             target_fixed = os.path.splitext(target)[0] + os.path.splitext(source)[1]
 
             snip.filesystem.moveFileToFile(source, target_fixed, clobber=True)
-            logger.debug("replace '%s' --> '%s'", source, target)
+            logger.debug("replace '%s' --> '%s'", source, target_fixed)
 
             if target_fixed != target:
                 self.trash.delete(target)
@@ -306,12 +323,13 @@ class MainWindow(tk.Tk):
         self.after(20, self.canvas.focus)
 
     def on_btn_move(self, event=None):
+        current_filelist_relative = self.currentFilelistRelative()
         new_directory_choices = list(
-            set(os.path.dirname(p) for p in self.current_filelist).union(
-                os.path.dirname(os.path.dirname(p)) for p in self.current_filelist)
+            set(os.path.dirname(p) for p in current_filelist_relative).union(
+                os.path.dirname(os.path.dirname(p)) for p in current_filelist_relative)
         )
 
-        default_new_directory = os.path.dirname(self.current_filelist[min(1, len(self.current_filelist) - 1)])
+        default_new_directory = os.path.dirname(current_filelist_relative[min(1, len(current_filelist_relative) - 1)])
 
         new_directory_choices.remove(default_new_directory)
         new_directory_choices.insert(0, default_new_directory)
@@ -320,7 +338,7 @@ class MainWindow(tk.Tk):
             self,
             ["Source: ", "New directory: "],
             [
-                self.current_filelist,
+                current_filelist_relative,
                 new_directory_choices
             ],
             stagger_lists=False
@@ -341,7 +359,8 @@ class MainWindow(tk.Tk):
         self.after(20, self.canvas.focus)
 
     def on_btn_concat(self, event=None):
-        images = [cv2.imread(path) for path in self.current_filelist]
+        current_filelist_relative = self.currentFilelistRelative()
+        images = [cv2.imread(path) for path in current_filelist_relative]
         height, width, __ = images[0].shape
 
         concat = (cv2.vconcat(images) if width > height else cv2.hconcat(images))
@@ -357,7 +376,7 @@ class MainWindow(tk.Tk):
         if newFileName == ".":
             return
 
-        logger.debug("concatinating '%s' to '%s' with method '%s'", self.current_filelist, newFileName, concat)
+        logger.debug("concatinating '%s' to '%s' with method '%s'", current_filelist_relative, newFileName, concat)
 
         cv2.imwrite(newFileName, concat)
         self.duplicates[self.current_hash].append(newFileName)
@@ -376,7 +395,7 @@ class MainWindow(tk.Tk):
         self.duplicate_hash_list = list(self.duplicates.keys())
         self.hash_picker.configure(values=self.duplicate_hash_list)
         self.hash_picker.current(0)
-        self.progbar_prog.configure(maximum=len(self.duplicate_hash_list))
+        self.progbar_seek.configure(to=len(self.duplicate_hash_list))
         self.onHashSelect()
 
     def onFileSelect(self, *args):
@@ -387,7 +406,7 @@ class MainWindow(tk.Tk):
 
     def onHashSelect(self, *args):
         self.current_hash = self.hash_picker.get()
-        self.var_progbar_prog.set(self.hash_picker.current())
+        self.var_progbar_seek.set(self.hash_picker.current())
         # print("Switch hash", new_hash)
 
         for widget in self.file_picker.winfo_children():
@@ -424,8 +443,11 @@ class MainWindow(tk.Tk):
         except Exception:
             self.btn_concat.config(state="disabled")
 
-        next_image_hash = self.duplicate_hash_list[self.hash_picker.current() + 1]
-        self.canvas.preloadImage(self.duplicates[next_image_hash])
+        try:
+            next_image_hash = self.duplicate_hash_list[self.hash_picker.current() + 1]
+            self.canvas.preloadImage(self.duplicates[next_image_hash])
+        except IndexError:
+            logger.warning("Not preloading next image (indexerror)")
 
 
 if __name__ == "__main__":
