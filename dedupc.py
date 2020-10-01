@@ -12,6 +12,7 @@ from PIL import Image
 import snip.filesystem
 import dupedb
 from functools import lru_cache
+from collections import namedtuple
 
 from snip.stream import TriadLogger
 logger = TriadLogger(__name__)
@@ -68,10 +69,10 @@ def makeImageSortTuple(x):
 
 @lru_cache()
 def makeDirSortTuple(x, good_words=EMPTY_SET, bad_words=EMPTY_SET):
-    upper = x.upper()
+    dirs = os.path.split(x)[0].lower()
     return (
-        -sum([upper.count(w.upper()) for w in good_words]),  # Put images with good words higher
-        +sum([upper.count(w.upper()) for w in bad_words]),  # Put images with bad words lower
+        -sum([dirs.count(w.lower()) for w in good_words]),  # Put images with good words higher
+        +sum([dirs.count(w.lower()) for w in bad_words]),  # Put images with bad words lower
         -len(x[:x.rfind(os.path.sep)]),  # Deep paths good
     )
 
@@ -82,7 +83,8 @@ def makeNameSortTuple(x, good_words=EMPTY_SET, bad_words=EMPTY_SET):
         +int(bool(re.match(r"^[0-9a-f]{36}\.", name))),  # we do NOT like it when it's a hash
         -sum([name.count(w.lower()) for w in good_words]),  # Put images with good words higher
         +sum([name.count(w.lower()) for w in bad_words]),  # Put images with bad words lower
-        -sum([name.count(w.lower()) for w in "-_ +"])  # Detailed filenames better
+        -sum([name.count(w.lower()) for w in "-_ +"]),  # Detailed filenames better
+        +int(bool(re.search(r" \(\d+\)\.", name))),  # Don't like series (base is better)
     )
 
 
@@ -95,7 +97,7 @@ def makeSortTupleAll(x, criteria={}):
 
 
 def explainSort(paths, criteria={}):
-    explanation = "image(-frames, -res, -size, -density), path(-good, +bad, -depth), name(-good, +bad, -punctuation)"
+    explanation = "image(-frames, -res, -size, -density), path(-good, +bad, -depth), name(-hash, -good, +bad, -punctuation, +number, )"
     for path in paths:
         explanation += "\n{}\t| {} ".format(
             makeSortTupleAll(path, criteria),
@@ -170,7 +172,11 @@ def getDuplicatesToDelete(db, criteria, interactive=False):
     # CHECK: Process and evalulate duplicate fingerprints.
     logger.info("Checking database for duplicates")
     i = 0
-    for filelist in db.generateDuplicateFilelists(threshhold=2):
+    for (filelist, bundled_hash) in db.generateDuplicateFilelists(bundleHash=True, threshhold=2):
+        if int(bundled_hash, base=16) == 0:
+            print(f"bundled_hash '{bundled_hash}' is a zero hash.")
+            continue
+
         filelist = sorted(filelist, key=makeImageSortTuple)
         if interactive:
             # The user gets to pick the image to keep.
@@ -464,6 +470,102 @@ def _doSuperDelete(filepaths, bundled_hash, delete, criteria={}, mock=True, expl
     explain(explanation)
     return best_path_fix
 
+SuperState = namedtuple("SuperState", ["best_image", "dest_path", "deletions", "needs_move", "explain_sort", "explain_string"])
+
+def getSuperState(filepaths, bundled_hash, criteria={}):
+    image_rating = {f: makeImageSortTuple(f) for f in filepaths}
+    dir_rating = {f: makeDirSortTuple(f, criteria.get("good_dirs", EMPTY_SET), criteria.get("bad_dirs", EMPTY_SET)) for f in filepaths}
+    name_rating = {f: makeNameSortTuple(f, criteria.get("good_names", EMPTY_SET), criteria.get("bad_names", EMPTY_SET)) for f in filepaths}
+    sorted_by_best_image = sorted(filepaths, key=image_rating.get)
+
+    # Determine best image, dir, name
+    try:
+        best_image = sorted_by_best_image[0]
+        best_dir = sorted(dir_rating, key=dir_rating.__getitem__)[0]
+        best_name = sorted(name_rating, key=name_rating.__getitem__)[0]
+        logger.debug(explainSort(filepaths, criteria))
+        logger.debug("Best image: '%s'", best_image)
+        logger.debug("Best dir:   '%s'", os.path.split(best_dir)[0])
+        logger.debug("Best name:  '%s'", os.path.split(best_name)[1])
+    except IndexError:
+        # List too small
+        return SuperState(
+            best_image=None,
+            dest_path=None,
+            deletions=[],
+            needs_move=False,
+            explain_sort=None,
+            explain_string="there aren't any"
+        )
+
+    files_to_delete = sorted_by_best_image[1:]
+    assert best_image not in files_to_delete
+
+    # If the name of the best image ties with the best name, use its name instead
+    # logger.info("Name tying debug")
+    # logger.info(f"{os.path.split(best_image)[1]=} {os.path.split(best_name)[1]=}")
+    # logger.info(f"{name_rating.get(best_image)=} {name_rating.get(best_name)=}")
+    if os.path.split(best_image)[1] != os.path.split(best_name)[1] and name_rating.get(best_image) == name_rating.get(best_name):
+        best_name = best_image
+        logger.debug("Overriding tiebreaker name: '%s'", best_name)
+
+    # If the dir of the best image ties with the best dir, use its dir instead
+    if os.path.split(best_image)[0] != os.path.split(best_dir)[0] and dir_rating.get(best_image) == dir_rating.get(best_dir):
+        best_dir = best_image
+        logger.debug("Overriding tiebreaker dir:  '%s'", best_dir)
+
+    # Construct best path
+    best_path = os.path.join(os.path.split(best_dir)[0], os.path.split(best_name)[1])
+    logger.debug("Best path:  '%s'", best_path)
+
+    best_path_fix = os.path.splitext(best_path)[0] + os.path.splitext(best_image)[1]
+    if best_path_fix not in filepaths:
+        # Make a new path
+        i = 0
+        o = best_path_fix
+        while os.path.isfile(best_path_fix):
+            logger.warn("Path '%s' exists as another hash?", best_path_fix)
+            i += 1
+            best_path_fix = os.path.splitext(o)[0] + f"_{i}" + os.path.splitext(o)[1]
+
+    # Logic
+    explanation = ""
+
+    # If the name of the best 
+
+    # If the best path alreaady has "a" best image, we don't need to move
+    if best_path_fix in filepaths and image_rating.get(best_path_fix) == image_rating.get(best_image):
+        explanation += f"Best path '{best_path}' is already tied for best\n"
+        logger.debug(f"Best path '{best_path}' is already tied for best")
+
+        # Delete old best image
+        files_to_delete.append(best_image)
+
+        # Keep new best image
+        best_image = best_path_fix
+        if best_path_fix in files_to_delete:
+            files_to_delete.remove(best_path_fix)
+
+    if files_to_delete:
+        explanation += "\n" + "\n".join(["- " + f for f in files_to_delete])
+
+    # If the best image isn't at the best path, move
+    if best_image != best_path_fix:
+        explanation += "\n" + "> " + best_path_fix + "\n" + "^ " + best_image
+    else:
+        # Otherwise, keep
+        explanation += "\n" + "+ " + best_image
+
+    # Log deletions
+
+    return SuperState(
+        best_image=best_image,
+        dest_path=best_path_fix,
+        deletions=files_to_delete,
+        needs_move=(best_image != best_path_fix),
+        explain_sort=explainSort(filepaths, criteria),
+        explain_string=explanation
+    )
 
 def superdelete(db, mock, criteria):
     with snip.filesystem.Trash() as trash:
@@ -567,7 +669,11 @@ def main():
 
     shelvefile = "{0}.s{1}".format(args.shelve, args.hashsize)
 
-    db = dupedb.db(shelvefile)
+    db = dupedb.db(shelvefile, hashsize=args.hashsize, strict_mode=args.strict)
+
+    # Prune first
+    if args.prune:
+        db.prune()
 
     # Scan directories for files and populate database
     if args.scanfiles:
@@ -590,10 +696,8 @@ def main():
             db.purge(keeppaths=image_paths)
 
         logger.info("Fingerprinting")
-        db.scanDirs(image_paths, recheck=args.recheck, hash_size=args.hashsize, strict_mode=args.strict)
+        db.scanDirs(image_paths, recheck=args.recheck)
 
-    if args.prune:
-        list(db.generateDuplicateFilelists(threshhold=1, validate=True))
 
     # Run commands as requested
     if args.renameDb:

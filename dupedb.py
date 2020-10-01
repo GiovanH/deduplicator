@@ -20,6 +20,8 @@ import snip.data
 from snip.loom import Spool
 import itertools
 from functools import lru_cache
+import re
+from math import ceil
 
 from snip.stream import TriadLogger
 logger = TriadLogger(__name__)
@@ -63,7 +65,7 @@ def isVideo(filename):
         return False
 
 
-def getProcHash(file_path, hash_size, strict=False):
+def getProcHash(file_path, hashsize, strict=True):
     """Gets a hash for a file. There are no requirements for the type of file.
     
     Args:
@@ -81,7 +83,7 @@ def getProcHash(file_path, hash_size, strict=False):
             return snip.hash.md5file(file_path)
 
         image = Image.open(file_path)
-        return str(imagehash.dhash(image, hash_size=hash_size))
+        return str(imagehash.dhash(image, hash_size=hashsize))
 
     elif isVideo(file_path):
         if strict:
@@ -93,7 +95,7 @@ def getProcHash(file_path, hash_size, strict=False):
         flag, frame = capture.retrieve()
         frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         image = Image.fromarray(frame)
-        return str(imagehash.dhash(image, hash_size=hash_size))
+        return str(imagehash.dhash(image, hash_size=hashsize))
 
     else:
         return snip.hash.md5file(file_path)
@@ -109,10 +111,36 @@ class db():
     
     """
 
-    def __init__(self, shelvefile, progressbar_allowed=True):
+    def __init__(self, shelvefile, hashsize=None, progressbar_allowed=True, strict_mode=True):
         super(db, self).__init__()
         self.shelvefile = shelvefile
         self.progressbar_allowed = progressbar_allowed
+        self.strict_mode = strict_mode
+
+        if hashsize == None:
+            # Hack: find size from naming convention
+            try:
+                (hashsize,) = re.search(r"\.s(\d+)$", shelvefile).groups()
+                hashsize = int(hashsize)
+            except:
+                print(repr(shelvefile))
+                logger.error(shelvefile, exc_info=True)
+        self.hashsize = hashsize
+        self.journal = {
+            "removed": [],
+            "validate": []
+        }
+
+    def applyJournal(self):
+        with ju.RotatingHandler(self.shelvefile, basepath="databases", default={}) as jdb:
+            for hash, path in self.journal['removed']:
+                dbentry = jdb.get(hash, [])
+                if path in dbentry:
+                    dbentry.remove(path)
+                    jdb[hash] = dbentry    
+
+            for hash, path in self.journal['validate']:
+                self.validateHash(jdb, hash, path)
 
     def updateRaw(self, old, new, hash):
         """Unused?
@@ -144,7 +172,7 @@ class db():
                 if good_file_set != set(jdb[key]):
                     jdb[key] = list(good_file_set)
 
-    def scanDirs(self, image_paths, recheck=False, hash_size=16, strict_mode=False):
+    def scanDirs(self, image_paths, recheck=False):
         """Scans image paths and updates the database
         
         Args:
@@ -162,7 +190,6 @@ class db():
         known_paths = set()
 
         if not recheck:
-            print(self.shelvefile)
             with ju.RotatingHandler(self.shelvefile, default={}, basepath="databases", readonly=True) as jdb:
                 known_paths = set(snip.data.flatList(jdb.values()))
 
@@ -189,7 +216,7 @@ class db():
             # Logger still logs debug statements
             # load the image and compute the difference hash
             try:
-                proc_hash = getProcHash(image_path, hash_size, strict=strict_mode)
+                proc_hash = getProcHash(image_path, self.hashsize, strict=self.strict_mode)
                 # Compress:
                 # proc_hash = proc_hash.decode("hex").encode("base64")
 
@@ -209,16 +236,16 @@ class db():
                     logger.debug("Image '%s' is a directory", image_path, exc_info=False)
                     return
 
-                print("File '%s' is corrupt or invalid." % image_path)
+                logger.warning("File '%s' is corrupt or invalid." % image_path)
                 logger.debug("File '%s' is corrupt or invalid.", image_path)
                 with open(f"badfiles_{self.shelvefile}.txt", "a", newline='\n') as shellfile:
                     shellfile.write("{} \n".format(image_path))
 
                 return
 
-            if int(proc_hash, base=16) == 0:
-                logger.warning("File: '%s' has zero hash", image_path)
-                return
+            # if int(proc_hash, base=16) == 0:
+            #     logger.warning("File: '%s' has zero hash", image_path)
+            #     return
 
             filename = image_path  # [image_path.rfind("/") + 1:]
 
@@ -240,6 +267,7 @@ class db():
         # Only check needed images
         image_paths = set(image_paths)
 
+        # We know that image_paths all exist, because they come from glob, probably, so no need to check them
         images_to_fingerprint = {
             image_path for image_path in image_paths
             if (image_path not in known_paths) or recheck
@@ -249,22 +277,21 @@ class db():
         num_images_to_fingerprint = len(images_to_fingerprint)
         chunk_size = 1000
 
-        from math import ceil
         total_chunks = ceil(num_images_to_fingerprint / chunk_size)
 
-        logger.info("Fingerprinting {} images with hash size {}".format(num_images_to_fingerprint, hash_size))
+        logger.info("Fingerprinting {} images with hash size {}".format(num_images_to_fingerprint, self.hashsize))
 
         fingerprinters = tqdm.tqdm(
             iterable=enumerate(snip.data.chunk(images_to_fingerprint, chunk_size)),
-            desc="All chunks",
+            desc="Fingerprint",
             unit="chunk"
         )
 
         for (i, image_path_chunk) in fingerprinters:
             with ju.RotatingHandler(self.shelvefile, default={}, basepath="databases") as jdb:
-                with snip.loom.Spool(10, name="Fingerprint {}/{}".format(i + 1, total_chunks), belay=True) as fpSpool:
+                with snip.loom.Spool(10, name="Fingerprint {}/{}".format(i + 1, total_chunks), belay=True) as fpspool:
                     for image_path in image_path_chunk:
-                        fpSpool.enqueue(target=fingerprintImage, args=(jdb, image_path,))
+                        fpspool.enqueue(target=fingerprintImage, args=(jdb, image_path,))
 
     def generateDuplicateFilelists(self, bundleHash=False, threshhold=1, validate=True):
         """Generate lists of files which all have the same hash.
@@ -283,7 +310,9 @@ class db():
         """
         logger.info("Generating information about duplicate images from database")
 
-        with ju.RotatingHandler(self.shelvefile, basepath="databases", readonly=(not validate)) as db:
+        db_is_readonly = (not validate)
+
+        with ju.RotatingHandler(self.shelvefile, basepath="databases", readonly=db_is_readonly) as db:
 
             pbar = None
             if self.progressbar_allowed:
@@ -303,29 +332,34 @@ class db():
                     continue
 
                 # Remove files that no longer exist and remove duplicate filenames
+
+                filenames = list(filter(os.path.isfile, set(filenames)))
+
+                for f1, f2 in itertools.combinations(filenames, 2):
+                    if os.path.samefile(f1, f2):
+                        logger.warning(f"File {f1} is a samefile duplicate of {f2}")
+                        filenames.remove(f2)
+
                 if validate:
-                    if int(key, base=16) == 0:
-                        print(f"Key '{key}' is a zero hash.")
-                        db.pop(key)
-                        continue
+                    for image_path in filenames.copy():
+                        if not self.validateHash(db, key, image_path):
+                            filenames.remove(image_path)
 
-                    filenames = list(filter(os.path.isfile, set(filenames)))
+                # Cleanup
+                db[key] = filenames
 
-                    for f1, f2 in itertools.combinations(filenames, 2):
-                        if os.path.samefile(f1, f2):
-                            print(f"File {f1} is a samefile duplicate of {f2}")
-                            filenames.remove(f2)
-
-                    db[key] = filenames
-
-                    # Remove hashes with no files
-                    if len(db[key]) == 0:
-                        db.pop(key)
-                        continue
+                # Remove hashes with no files
+                if len(db[key]) == 0:
+                    db.pop(key)
+                    continue
 
                 # If there is STILL more than one file with the hash:
                 if len(filenames) >= threshhold:
                     # logger.debug("Found {0} duplicate images for hash [{1}]".format(len(filenames), key))
+                    if not db_is_readonly:
+                        # Do not return a reference that can modify the database
+                        filenames = filenames.copy()
+
                     if bundleHash:
                         yield (filenames, key)
                     else:
@@ -333,3 +367,75 @@ class db():
 
         if pbar:
             pbar.close()
+
+    def prune(self):
+        # Removes files that have disappeared
+
+        def _prune(db, key):
+
+            filenames = set()
+            for filepath in db[key]:
+                if os.path.isfile(filepath):
+                    filenames.add(filepath)
+                else:
+                    logger.warning("File '%s' disappeared, removing", filepath)
+
+            for f1, f2 in itertools.combinations(filenames, 2):
+                if os.path.samefile(f1, f2):
+                    logger.warning(f"File {f1} is a samefile duplicate of {f2}")
+                    filenames.remove(f2)
+
+            # Cleanup
+            db[key] = list(filenames)
+
+            # Remove hashes with no files
+            if len(db[key]) == 0:
+                db.pop(key)
+
+        with ju.RotatingHandler(self.shelvefile, basepath="databases", readonly=True) as db:
+            dbkeys = list(db.keys())
+            chunk_size = 100*60*5
+
+            total_chunks = ceil(len(dbkeys) / chunk_size)
+
+            pruners = tqdm.tqdm(
+                iterable=enumerate(snip.data.chunk(dbkeys, chunk_size)),
+                desc="Prune",
+                unit="chunk"
+            )
+
+        for (i, keychunk) in pruners:
+            with ju.RotatingHandler(self.shelvefile, basepath="databases", readonly=False) as db:
+                with snip.loom.Spool(20, name="Prune {}/{}".format(i + 1, total_chunks)) as spool:
+                    for key in keychunk:
+                        spool.enqueue(_prune, (db, key,))
+
+    def validateHash(self, jdb, expected_hash, image_path):
+        if not os.path.isfile(image_path):
+            # logger.warning(f"File {image_path} not found during validation!")            
+            if jdb:
+                dbentry = jdb.get(expected_hash, [])
+                if image_path in dbentry:
+                    dbentry.remove(image_path)
+                    jdb[expected_hash] = dbentry
+            return False
+
+        real_hash = getProcHash(image_path, self.hashsize, strict=self.strict_mode)
+        if real_hash != expected_hash:
+            logger.warning(f"File {image_path} has wrong {self.hashsize}-hash: expected {expected_hash}, got {real_hash}")
+            
+            if jdb:
+                dbentry = jdb.get(expected_hash, [])
+                if image_path in dbentry:
+                    dbentry.remove(image_path)
+                    jdb[expected_hash] = dbentry
+
+                dbentry = jdb.get(real_hash, [])
+                dbentry.append(image_path)
+                jdb[real_hash] = dbentry
+            return False
+        else:
+            return True
+
+    def fullValidate(self, threshhold=1):
+        self.generateDuplicateFilelists(self, threshhold=threshhold, validate=True)

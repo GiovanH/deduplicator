@@ -19,9 +19,13 @@ from snip.tkit.contentcanvas import ContentCanvas
 import dupedb
 from dedupc import makeSortTupleAll, explainSort
 
+import glob
+
 import functools
 import re
 from pathlib import Path
+
+from dedupc import getSuperState
 
 match_exts = [".jpg", ".gif", ".webm", ".png"]
 
@@ -64,27 +68,34 @@ def parse_args():
     ap.add_argument(
         "--bad_names", nargs='+', default=[],
         help="Substrings in the path to prioritize during file sorting.")
-    return ap.parse_args()
+    args = ap.parse_args()
+    # Workaround for https://bugs.python.org/issue9334
+    args.good_names = {s.replace(r"\-", "-") for s in args.good_names}
+    args.bad_names = {s.replace(r"\-", "-") for s in args.bad_names}
+    return args
 
 def getSeriesInfo(name):
     from collections import namedtuple
     patterns = [
-        (r"_0(\d)_1$",    "_0<#>_1"),    # Patreon
-        (r"o(\d+)_1280$", "o<#>_1280"),  # Tumblr
-        (r"_(\d+)$",      "_<#>"),
-        (r"\((\d+)\)$",   "(<#>)"),
-        (r"_p(\d+)$",     "_p<#>"),
-        (r"_img(\d+)$",   "_img<#>"),
-        (r"-img(\d+)$",   "-img<#>"),
-        (r"-alt(\d*)$",   "-alt<#>"),
-        (r" edit()$",     " edit<#>"),
+        # (r"_0(\d)_1$",    "_0<#>_1"),    # Patreon
+        # (r"o(\d+)_1280$", "o<#>_1280"),  # Tumblr
+        (r"_(\d+)$",             "_<#>"),
+        (r"-(\d+)$",             "-<#>"),
+        (r" (\d+)$",             " <#>"),
+        (r"\((\d+)\)$",          "(<#>)"),
+        (r"_p(\d+)$",            "_p<#>"),
+        (r"_img(\d+)$",          "_img<#>"),
+        (r"-img(\d+)$",          "-img<#>"),
+        (r"-alt(\d*)$",          "-alt<#>"),
+        (r" edit$",              " edit<#>"),
+        (r"(?<=[a-zA-Z])(\d)$",  "<#>"),
     ]
     for (pattern, stylem) in patterns:
         match = re.search(pattern, name)
         if match:
             try:
                 i = int(match.groups()[0])
-            except ValueError:
+            except (IndexError, ValueError):
                 i = 1
             if i > 1000:
                 continue
@@ -103,32 +114,63 @@ def altPathOf(path):
         style = seriesinfo.style
     else:
         i = 1
-        style = stem + "_<#>"
+        style = stem + " (<#>)"
+
+    checks = 0  # Limit the number of times we check isfile
 
     working_path = os.path.join(
         dirname,
         f"{style.replace('<#>', str(i))}{ext}"
     )
-    while working_path == path or os.path.isfile(working_path):
+        
+    while (working_path == path) or os.path.isfile(working_path):
         i += 1
-        working_path = os.path.join(
+        checks += 1
+        working_path = os.path.normpath(os.path.join(
             dirname,
             f"{style.replace('<#>', str(i))}{ext}"
-        )
-        assert i < 100
+        ))
+        assert checks < 100
     return working_path
 
 def findBaseFileForPath(path):
     name = os.path.splitext(path)[0]
 
     seriesinfo = getSeriesInfo(name)
-    if not seriesinfo:
-        return False
+    if seriesinfo:
+        # Try to find previous 
+        i, style = seriesinfo
+        prev_base_name = style.replace("<#>", str(i - 1))
+        if prev_base_name != name:
+            for ext in match_exts:
+                if os.path.isfile(prev_base_name + ext):
+                    # logger.debug(f"Found {prev_base_name}")
+                    return prev_base_name
+                # else:
+                #     logger.debug(f"Not previous '{prev_base_name + ext}'")
 
-    i, style = seriesinfo
-    base_name = style.replace("<#>", str(i - 1))
-    return any(base_name != name and os.path.isfile(base_name + ext)
-        for ext in match_exts)
+    # Find common base
+    patterns = [
+        (r"[-_ ][\d+]$", r"*"),
+        (r"[-_ ]alt$", r"*"),
+        (r"[-_ ]edit$", r"*"),
+        (r" otm$", r"*"),
+        (r" otn$", r"*"),
+        (r"(\\\w+\-pn_\d+_)[^\\]+$", r"\g<1>*"),
+    ]
+    for (pattern, sub) in patterns:
+        match = re.search(pattern, name)
+        if match:
+            g = glob.glob(re.sub(r"([\[\]])", r"\\\g<1>", re.sub(pattern, sub, name)))
+            if len(g) > 1:
+                # logger.debug(f"Found {g}")
+                return g[0]
+        #     else:
+        #         logger.debug(f"Not glob '{re.sub(pattern, sub, name)}', '{g}'")
+        # else:
+        #     logger.debug(f"Not pattern '{pattern}'")
+
+    return False
 
 
 class MainWindow(tk.Tk):
@@ -145,6 +187,7 @@ class MainWindow(tk.Tk):
                 "good_dirs": frozenset(args.good_dirs),
                 "bad_dirs": frozenset(args.bad_dirs),
             }
+            logger.debug(self.criteria)
 
             self.threshhold = args.threshhold
 
@@ -180,7 +223,8 @@ class MainWindow(tk.Tk):
     def open_shelvefile(self, shelvefile):
         if not shelvefile:
             return
-        self.db = dupedb.db(shelvefile)
+
+        self.db = dupedb.db(shelvefile, strict_mode=False)
         self.trash = snip.filesystem.Trash(verbose=True)
 
         self.current_hash = ""
@@ -194,6 +238,7 @@ class MainWindow(tk.Tk):
         self.loadDuplicates()
 
     def destroy(self):
+        self.db.applyJournal()
         self.trash.finish()
         super().destroy()
 
@@ -256,14 +301,17 @@ class MainWindow(tk.Tk):
         btn_replace = ttk.Button(self.toolbar, text="Replace", takefocus=False, command=self.on_btn_replace)
         self.btn_concat = btn_concat = ttk.Button(self.toolbar, text="Concatenate", takefocus=False, command=self.on_btn_concat)
 
-        self.opt_hidealts_var = tk.BooleanVar(value=False)
+        self.opt_hidealts_var = tk.BooleanVar(value=True)
         opt_hidealts = ttk.Checkbutton(self.toolbar, text="Hide known alts", variable=self.opt_hidealts_var)
         self.opt_hidealts_var.trace("w", lambda *a: self.loadDuplicates())
+
+        self.opt_confirm_superdelete_var = tk.BooleanVar(value=False)
+        opt_confirm_superdelete = ttk.Checkbutton(self.toolbar, text="Require S confirm", variable=self.opt_confirm_superdelete_var)
 
         self.var_progbar_seek = tk.IntVar()
         self.progbar_seek = ttk.Scale(self.toolbar, takefocus=False, variable=self.var_progbar_seek, command=self.on_adjust_seek)
 
-        for btn in [btn_open, btn_delete, btn_move, btn_replace, btn_concat, opt_hidealts, self.progbar_seek]:
+        for btn in [btn_open, btn_delete, btn_move, btn_replace, btn_concat, opt_hidealts, opt_confirm_superdelete, self.progbar_seek]:
             btn.grid(row=rowInOrder(), sticky="ew")
 
     def on_adjust_seek(self, event):
@@ -271,22 +319,22 @@ class MainWindow(tk.Tk):
         self.onHashSelect()
 
     def update_infobox(self):
-        filepath = self.current_file.get()
-        if not filepath:
-            return
+        # filepath = self.current_file.get()
+        # if not filepath:
+        #     return
 
-        filename = os.path.split(filepath)[1]
-        filesize = os.path.getsize(filepath)
-        filesize_str = snip.strings.bytes_to_string(filesize)
-        try:
-            frames = snip.image.framesInImage(filepath)
-            w, h = Image.open(filepath).size
-            ratio = filesize / (w * h)
-            newtext = f"{filename} [{frames}f]\n{filesize_str} [{w}x{h}px] [{ratio}]"
-        except Exception:
-            newtext = f"{filename} \n{filesize_str}"
-            # traceback.print_exc()
-        self.infobox.configure(text=newtext)
+        # filename = os.path.split(filepath)[1]
+        # filesize = os.path.getsize(filepath)
+        # filesize_str = snip.strings.bytes_to_string(filesize)
+        # try:
+        #     frames = snip.image.framesInImage(filepath)
+        #     w, h = Image.open(filepath).size
+        #     ratio = filesize / (w * h)
+        #     newtext = f"{filename} [{frames}f]\n{filesize_str} [{w}x{h}px] [{ratio}]"
+        # except Exception:
+        #     newtext = f"{filename} \n{filesize_str}"
+        #     # traceback.print_exc()
+        self.infobox.configure(text=self.canvas.getInfoLabel())
 
     # Navigate
 
@@ -334,30 +382,40 @@ class MainWindow(tk.Tk):
     def on_btn_delete(self, event=None):
         filepath = self.current_file.get()
         self.trash.delete(filepath)
+        self.db.journal['removed'].append((self.hash_picker.get(), filepath))
         self.canvas.markCacheDirty(filepath)
         self.onHashSelect()
 
     def on_btn_superdelete(self, event=None):
-        from dedupc import _doSuperDelete
 
         current_hash = self.hash_picker.get()
         filelist = self.current_filelist
 
-        explanation = tk.StringVar(self)
-        _doSuperDelete(filelist, current_hash, self.trash.delete, criteria=self.criteria, mock=True, explain=explanation.set)
+        superstate = getSuperState(filelist, current_hash, criteria=self.criteria)
+        logger.debug(superstate)
 
-        should_do = True or messagebox.askyesno(
+        should_do = (not self.opt_confirm_superdelete_var.get()) or messagebox.askyesno(
             title="Confirm",
-            message=f"Do superdelete operation?\n{explanation.get()}"
+            message=f"Do superdelete operation?\n{superstate.explain_string}"
         )
         if should_do is True:
-            new_file = _doSuperDelete(filelist, current_hash, self.trash.delete, criteria=self.criteria, mock=False)
-            if new_file not in filelist:
-                self.duplicates[current_hash].append(new_file)
+            for path in superstate.deletions:
+                self.trash.delete(path, rename=True)
 
-        for f in filelist:
-            self.canvas.markCacheDirty(f)
-        self.nextHash()
+            if superstate.needs_move:
+                snip.filesystem.moveFileToFile(
+                    superstate.best_image, 
+                    superstate.dest_path, 
+                    clobber=False
+                )
+
+            if superstate.dest_path not in filelist:
+                self.duplicates[current_hash].append(superstate.dest_path)
+
+            for f in filelist:
+                self.canvas.markCacheDirty(f)
+                self.db.journal['validate'].append((self.hash_picker.get(), f))
+            self.nextHash()
 
     def on_btn_replace(self, event=None):
         current_filelist_relative = self.currentFilelistRelative()
@@ -377,7 +435,8 @@ class MainWindow(tk.Tk):
 
             target_fixed = os.path.splitext(target)[0] + os.path.splitext(source)[1]
 
-            snip.filesystem.moveFileToFile(source, target_fixed, clobber=True)
+            # TODO: "Are you sure" on clobber
+            snip.filesystem.moveFileToFile(source, target_fixed, clobber=False)
             logger.debug("replace '%s' --> '%s'", source, target_fixed)
 
             if target_fixed != target:
@@ -388,6 +447,9 @@ class MainWindow(tk.Tk):
                 self.duplicates[self.current_hash].append(target_fixed)
             self.canvas.markCacheDirty(source)
             self.canvas.markCacheDirty(target_fixed)
+
+            for path in [source, target, target_fixed]:
+                self.db.journal['validate'].append((self.hash_picker.get(), path))
 
             self.onHashSelect()
         self.after(20, self.canvas.focus)
@@ -456,23 +518,52 @@ class MainWindow(tk.Tk):
 
     def loadDuplicates(self):
 
-        generator = self.db.generateDuplicateFilelists(bundleHash=True, threshhold=self.threshhold, validate=True)
+        generator = self.db.generateDuplicateFilelists(bundleHash=True, threshhold=self.threshhold, validate=False)
         self.duplicates = {}
         for (filelist, bundled_hash) in generator:
+            if int(bundled_hash, base=16) == 0:
+                print(f"bundled_hash '{bundled_hash}' is a zero hash.")
+                continue
             if self.opt_hidealts_var.get():
-                # noextlist = {os.path.splitext(p)[0] for p in filelist}
-                for filename in filelist.copy():
+                base_names = {os.path.splitext(p)[0] for p in filelist}
+                filelist_no_series = filelist.copy()
+
+                for filename in filelist:
+                    # String slicing method
+                    base_name_quick = os.path.splitext(filename)[0]
+                    base_name_quick_stub = base_name_quick[:-12]
+                    base_name_len = len(base_name_quick)
+                    if any((n.startswith(base_name_quick_stub)) and len(n) <= base_name_len and len(n) > (base_name_len - 12)
+                            for n in base_names.difference({base_name_quick})):
+                        logger.debug(f"{filename} has simple base file for '{base_name_quick}' in {base_names}")
+                        filelist_no_series.remove(filename)
+                        base_names.remove(base_name_quick)
+                        continue
+
+                    # Smart method
                     base_name = findBaseFileForPath(filename)
-                    if base_name:
-                        logger.info(f"{filename} has base file in {base_name}")
-                        filelist.remove(filename)
-                    # else:
-                    #     logger.info(f"{filename} has NO base file in {base_names}")
-                if len(filelist) < self.threshhold:
+                    if base_name in filelist_no_series:
+                        logger.debug(f"{filename} has base file in {base_name}")
+                        filelist_no_series.remove(filename)
+                        continue
+
+                if len(filelist_no_series) < self.threshhold:
                     continue
+
+                # Validate *now*, with reduced list:
+                for filepath in filelist_no_series.copy():
+                    if not self.db.validateHash(None, bundled_hash, filepath):
+                        filelist_no_series.remove(filepath)
+                        self.db.journal["removed"].append((bundled_hash, filepath))
+                
+                if len(filelist_no_series) < self.threshhold:
+                    continue
+
             self.duplicates[bundled_hash] = filelist
             # if len(self.duplicates.keys()) > 5:
             #     break
+        self.db.applyJournal()    
+        
         self.duplicate_hash_list = list(self.duplicates.keys())
         self.hash_picker.configure(values=self.duplicate_hash_list)
         self.hash_picker.current(0)
@@ -504,16 +595,25 @@ class MainWindow(tk.Tk):
         # ogger.debug("Known duplicates: %s", all_dupes_for_hash)
         # logger.debug("Shown duplicates: %s", self.current_filelist)
         # self.listbox_images.delete(0, self.listbox_images.size())
+
+        superstate = getSuperState(self.current_filelist, self.current_hash, criteria=self.criteria)
+
         for filename in self.current_filelist:
+            filename_label = f"{filename}*" if filename == superstate.dest_path else filename
             tk.Radiobutton(
                 self.file_picker,
-                text=filename,
+                text=filename_label,
                 variable=self.current_file,
                 value=filename
             ).pack(anchor="w")
 
             if not self.current_file.get():
                 self.current_file.set(filename)
+        if superstate.dest_path not in self.current_filelist:
+            tk.Label(
+                self.file_picker,
+                text=f">> {superstate.dest_path}*"
+            ).pack(anchor="w")
 
         try:
             # Only enable if there are multiple unique images in the list
