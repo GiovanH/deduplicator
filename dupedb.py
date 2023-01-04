@@ -300,6 +300,10 @@ class db():
                     for image_path in image_path_chunk:
                         fpspool.enqueue(target=fingerprintImage, args=(jdb, image_path,))
 
+    def getRawCopy(self):
+        with ju.RotatingHandler(self.shelvefile, basepath="databases", readonly=True) as db:
+            return db.copy()
+
     def generateDuplicateFilelists(self, bundleHash=False, threshhold=1, validate=True):
         """Generate lists of files which all have the same hash.
         

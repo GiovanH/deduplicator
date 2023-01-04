@@ -13,6 +13,9 @@ import snip.filesystem
 import dupedb
 from functools import lru_cache
 from collections import namedtuple
+import tqdm
+import itertools
+import json
 
 from snip.stream import TriadLogger
 logger = TriadLogger(__name__)
@@ -575,6 +578,44 @@ def superdelete(db, mock, criteria):
             except OSError:
                 logger.error("Couldn't finish delete for hash '%s'", bundled_hash, exc_info=True)
 
+@lru_cache()
+def stringsAlmostEqual(s1, s2, threshhold=1):
+    misses = 0
+
+    for c1, c2 in zip(s1, s2):
+        if c1 != c2:
+            misses += 1
+            if misses >= threshhold:
+                return False
+    return True
+
+def check_similar(db):
+    whole_db = db.getRawCopy()
+    similar_hashes = set()
+
+    all_keys = frozenset(whole_db.keys())
+
+    def _checkkey(f1):
+        for f2 in all_keys:
+            if f1 != f2 and stringsAlmostEqual(f1, f2, 2):
+                # logger.info(f"Similar hashes: '{f1}', '{f2}'")
+                similar_hashes.add(frozenset([f1, f2]))
+
+    with snip.loom.Spool(32, name="Checking") as spool:
+        for k in tqdm.tqdm(iterable=all_keys, desc="Permutating"):
+            spool.enqueue(_checkkey, (k,))
+
+    for f1, f2 in similar_hashes:
+        whole_db.pop(f1)
+        whole_db.pop(f2)
+    #     message = f"Similar hashes: '{f1}', '{f2}'\n"
+    #     for hash in [f2, f2]:
+    #         for filepath in db[hash]:
+    #             message += f"{hash}: {filepath}\n"
+    #     logger.info(message)
+
+    with open("temp.json", "w") as fp:
+        json.dump(whole_db, fp)
 
 def parse_args():
     """
@@ -629,6 +670,9 @@ def parse_args():
         "-l", "--list", action="store_true",
         help="Show duplicate information on screen.")
     ap.add_argument(
+        "--listsimilar", action="store_true",
+        help="Finds similar hashes in database")
+    ap.add_argument(
         "-r", "--renameDb", action="store_true",
         help="Rename files to their perceptual hash, ordering them by similarity. Renames all images in DB.")
     ap.add_argument(
@@ -670,6 +714,9 @@ def main():
     shelvefile = "{0}.s{1}".format(args.shelve, args.hashsize)
 
     db = dupedb.db(shelvefile, hashsize=args.hashsize, strict_mode=args.strict)
+
+    if args.listsimilar:
+        check_similar(db)
 
     # Prune first
     if args.prune:
