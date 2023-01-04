@@ -68,6 +68,9 @@ def parse_args():
     ap.add_argument(
         "--bad_names", nargs='+', default=[],
         help="Substrings in the path to prioritize during file sorting.")
+    ap.add_argument(
+        "--ignore_dirs", nargs='+', default=[],
+        help="Substrings in the path to exclude from comparison entirely.")
     args = ap.parse_args()
     # Workaround for https://bugs.python.org/issue9334
     args.good_names = {s.replace(r"\-", "-") for s in args.good_names}
@@ -189,6 +192,8 @@ class MainWindow(tk.Tk):
             }
             logger.debug(self.criteria)
 
+            self.ignore_dirs = args.ignore_dirs
+
             self.threshhold = args.threshhold
 
             self.initwindow()
@@ -198,7 +203,7 @@ class MainWindow(tk.Tk):
                     self.pick_and_open_shelvefile()
                 else:
                     self.open_shelvefile(args.shelvefile)
-            except TclError:
+            except TclError as e:
                 logger.error("No duplicate images in selection.")
                 self.destroy()
                 return
@@ -409,7 +414,7 @@ class MainWindow(tk.Tk):
                     clobber=False
                 )
 
-            if superstate.dest_path not in filelist:
+            if superstate.dest_path not in filelist and "unknown" not in superstate.dest_path:
                 self.duplicates[current_hash].append(superstate.dest_path)
 
             for f in filelist:
@@ -443,7 +448,7 @@ class MainWindow(tk.Tk):
                 self.trash.delete(target)
                 self.canvas.markCacheDirty(target)
 
-            if target_fixed not in self.duplicates[self.current_hash]:
+            if target_fixed not in self.duplicates[self.current_hash] and "unknown" not in target_fixed:
                 self.duplicates[self.current_hash].append(target_fixed)
             self.canvas.markCacheDirty(source)
             self.canvas.markCacheDirty(target_fixed)
@@ -485,7 +490,8 @@ class MainWindow(tk.Tk):
             new_path = snip.filesystem.moveFileToDir(source, target, clobber=False)
             logger.debug("move '%s' --> '%s'", source, target)
 
-            self.duplicates[self.current_hash].append(new_path)
+            if "unknown" not in new_path:
+                self.duplicates[self.current_hash].append(new_path)
 
             self.onHashSelect()
         self.after(20, self.canvas.focus)
@@ -524,6 +530,11 @@ class MainWindow(tk.Tk):
             if int(bundled_hash, base=16) == 0:
                 print(f"bundled_hash '{bundled_hash}' is a zero hash.")
                 continue
+            for filename in filelist.copy():
+                if any(ig.lower() in os.path.split(filename)[0].lower() for ig in self.ignore_dirs):
+                    logger.debug(f"{filename} ignored due to '{self.ignore_dirs}' in {base_names}")
+                    filelist.remove(filename)
+
             if self.opt_hidealts_var.get():
                 base_names = {os.path.splitext(p)[0] for p in filelist}
                 filelist_no_series = filelist.copy()
@@ -564,7 +575,10 @@ class MainWindow(tk.Tk):
             #     break
         self.db.applyJournal()    
         
-        self.duplicate_hash_list = list(self.duplicates.keys())
+        self.duplicate_hash_list = sorted(
+            list(self.duplicates.keys()), 
+            key=lambda k: self.duplicates.get(k)[:1]
+        )
         self.hash_picker.configure(values=self.duplicate_hash_list)
         self.hash_picker.current(0)
         self.progbar_seek.configure(to=len(self.duplicate_hash_list))
