@@ -22,6 +22,7 @@ import itertools
 from functools import lru_cache
 import re
 from math import ceil
+import json
 
 from snip.stream import TriadLogger
 logger = TriadLogger(__name__)
@@ -31,7 +32,6 @@ VALID_IMAGE_EXTENSIONS = {"gif", "jpg", "png", "jpeg", "bmp", "jfif"}
 
 # Image.MAX_IMAGE_PIXELS = 148306125
 Image.MAX_IMAGE_PIXELS = 160000000
-
 
 @lru_cache()
 def isImage(filename):
@@ -64,6 +64,13 @@ def isVideo(filename):
         # No extension
         return False
 
+CACHE = {}
+try:
+    import pickle
+    with open("shared_cache.pik", "rb") as fp:
+        CACHE = pickle.load(fp)
+except Exception:
+    logger.warning("No cache", exc_info=True)
 
 def getProcHash(file_path, hashsize, strict=True):
     """Gets a hash for a file. There are no requirements for the type of file.
@@ -78,6 +85,8 @@ def getProcHash(file_path, hashsize, strict=True):
         If the file is a video, this will return the procedural hash of the first frame.
         If the file is anything else, this returns the md5 hash of the file.
     """
+    if CACHE.get(file_path):
+        return CACHE.get(file_path)
     if isImage(file_path):
         if strict and snip.image.framesInImage(file_path) > 1:
             return snip.hash.md5file(file_path)
@@ -247,14 +256,12 @@ class db():
             #     logger.warning("File: '%s' has zero hash", image_path)
             #     return
 
-            filename = image_path  # [image_path.rfind("/") + 1:]
-
             # Add the path to the database if it's not already present.
             # Each Key (a hash) has a List value.
             # The list is a list of file paths with that hash.
-            if filename not in db.get(proc_hash, []):
+            if image_path not in db.get(proc_hash, []):
                 logger.debug("New file: '%s' w/ hash '%s'", image_path, proc_hash)
-                db[proc_hash] = db.get(proc_hash, []) + [filename]
+                db[proc_hash] = db.get(proc_hash, []) + [image_path]
             else:
                 logger.debug("File: '%s' w/ hash '%s' already in db", image_path, proc_hash)
 
