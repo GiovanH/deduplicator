@@ -72,6 +72,12 @@ try:
 except Exception:
     logger.warning("No cache", exc_info=True)
 
+def pathHasGenericName(path):
+    path, basename = os.path.split(path)
+    return any(b in basename for b in []) \
+        or any(basename.startswith(b) for b in ['unknown', 'image0']) \
+        or any(b in path for b in [])
+
 def getProcHash(file_path, hashsize, strict=True):
     """Gets a hash for a file. There are no requirements for the type of file.
     
@@ -224,6 +230,11 @@ class db():
             # Print statements go to the spool
             # Logger still logs debug statements
             # load the image and compute the difference hash
+
+            if pathHasGenericName(image_path):
+                logger.warning(f"File {image_path} is a generic name! Skipping")
+                return
+
             try:
                 proc_hash = getProcHash(image_path, self.hashsize, strict=self.strict_mode)
                 # Compress:
@@ -390,6 +401,11 @@ class db():
                     filenames.add(filepath)
                 else:
                     logger.warning("File '%s' disappeared, removing", filepath)
+
+            for path in [*filenames]:
+                if pathHasGenericName(path):
+                    logger.warning(f"File {path} is a generic name! Removing")
+                    filenames.remove(path)
 
             for f1, f2 in itertools.combinations(filenames, 2):
                 if os.path.samefile(f1, f2):
