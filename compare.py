@@ -69,6 +69,9 @@ def parse_args():
         "--bad_names", nargs='+', default=[],
         help="Substrings in the path to prioritize during file sorting.")
     ap.add_argument(
+        "--whitelist_dirs", nargs='+', default=[],
+        help="Substrings to require in the path to include in comparison.")
+    ap.add_argument(
         "--ignore_dirs", nargs='+', default=[],
         help="Substrings in the path to exclude from comparison entirely.")
     args = ap.parse_args()
@@ -125,7 +128,7 @@ def altPathOf(path):
         dirname,
         f"{style.replace('<#>', str(i))}{ext}"
     )
-        
+
     while (working_path == path) or os.path.isfile(working_path):
         i += 1
         checks += 1
@@ -141,7 +144,7 @@ def findBaseFileForPath(path):
 
     seriesinfo = getSeriesInfo(name)
     if seriesinfo:
-        # Try to find previous 
+        # Try to find previous
         i, style = seriesinfo
         prev_base_name = style.replace("<#>", str(i - 1))
         if prev_base_name != name:
@@ -193,6 +196,8 @@ class MainWindow(tk.Tk):
             logger.debug(self.criteria)
 
             self.ignore_dirs = args.ignore_dirs
+            self.whitelist_dirs = args.whitelist_dirs
+
 
             self.threshhold = args.threshhold
 
@@ -409,8 +414,8 @@ class MainWindow(tk.Tk):
 
             if superstate.needs_move:
                 snip.filesystem.moveFileToFile(
-                    superstate.best_image, 
-                    superstate.dest_path, 
+                    superstate.best_image,
+                    superstate.dest_path,
                     clobber=False
                 )
 
@@ -530,6 +535,14 @@ class MainWindow(tk.Tk):
             if int(bundled_hash, base=16) == 0:
                 print(f"bundled_hash '{bundled_hash}' is a zero hash.")
                 continue
+            if self.whitelist_dirs:
+                white_ok = False
+                for white_dir in self.whitelist_dirs:
+                    if any(white_dir.lower() in os.path.split(filename)[0].lower() for filename in filelist):
+                        white_ok = True
+                        break
+                if not white_ok:
+                    continue
             for filename in filelist.copy():
                 if any(ig.lower() in os.path.split(filename)[0].lower() for ig in self.ignore_dirs):
                     logger.debug(f"{filename} ignored due to '{self.ignore_dirs}' in {base_names}")
@@ -566,17 +579,17 @@ class MainWindow(tk.Tk):
                     if not self.db.validateHash(None, bundled_hash, filepath):
                         filelist_no_series.remove(filepath)
                         self.db.journal["removed"].append((bundled_hash, filepath))
-                
+
                 if len(filelist_no_series) < self.threshhold:
                     continue
 
             self.duplicates[bundled_hash] = filelist
             # if len(self.duplicates.keys()) > 5:
             #     break
-        self.db.applyJournal()    
-        
+        self.db.applyJournal()
+
         self.duplicate_hash_list = sorted(
-            list(self.duplicates.keys()), 
+            list(self.duplicates.keys()),
             key=lambda k: self.duplicates.get(k)[:1]
         )
         self.hash_picker.configure(values=self.duplicate_hash_list)
