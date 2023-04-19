@@ -85,16 +85,17 @@ def getSeriesInfo(name):
     patterns = [
         # (r"_0(\d)_1$",    "_0<#>_1"),    # Patreon
         # (r"o(\d+)_1280$", "o<#>_1280"),  # Tumblr
-        (r"_(\d+)$",             "_<#>"),
-        (r"-(\d+)$",             "-<#>"),
-        (r" (\d+)$",             " <#>"),
-        (r"\((\d+)\)$",          "(<#>)"),
-        (r"_p(\d+)$",            "_p<#>"),
-        (r"_img(\d+)$",          "_img<#>"),
-        (r"-img(\d+)$",          "-img<#>"),
-        (r"-alt(\d*)$",          "-alt<#>"),
-        (r" edit$",              " edit<#>"),
-        (r"(?<=[a-zA-Z])(\d)$",  "<#>"),
+        (r"_(\d+)$",            "_<#>"),
+        (r"-(\d+)$",            "-<#>"),
+        (r" (\d+)$",            " <#>"),
+        (r"\((\d+)\)$",         "(<#>)"),
+        (r"_p(\d+)$",           "_p<#>"),
+        (r"_img(\d+)$",         "_img<#>"),
+        (r"-img(\d+)$",         "-img<#>"),
+        (r"-alt(\d*)$",         "-alt<#>"),
+        (r" edit$",             " edit<#>"),
+        (r"-(\d+)_1_",          "-<#>_1_"),
+        (r"(?<=[a-zA-Z])(\d)$", "<#>"),
     ]
     for (pattern, stylem) in patterns:
         match = re.search(pattern, name)
@@ -157,12 +158,14 @@ def findBaseFileForPath(path):
 
     # Find common base
     patterns = [
-        (r"[-_ ][\d+]$", r"*"),
-        (r"[-_ ]alt$", r"*"),
-        (r"[-_ ]edit$", r"*"),
-        (r" otm$", r"*"),
-        (r" otn$", r"*"),
+        (r"[-_ ][\d+]$", '*'),
+        (r" \([0-9]\)$", '*'),
         (r"(\\\w+\-pn_\d+_)[^\\]+$", r"\g<1>*"),
+        (r" otm$", '*'),
+        (r" otn$", '*'),
+        (r"[-_ ]alt$", '*'),
+        (r"[-_ ]edit$", '*'),
+        # (r"-(\d+)_1_", "-*_1_"),
     ]
     for (pattern, sub) in patterns:
         match = re.search(pattern, name)
@@ -357,7 +360,11 @@ class MainWindow(tk.Tk):
     def modImage(self, mod):
         next_image_index = self.current_filelist.index(self.current_file.get()) + mod
         next_image = self.current_filelist[next_image_index % len(self.current_filelist)]
-        self.current_file.set(next_image)
+        try:
+            self.current_file.set(next_image)
+        except:
+            logger.error(next_image)
+            raise
 
     def nextHash(self, *args):
         return self.modHash(1)
@@ -419,7 +426,7 @@ class MainWindow(tk.Tk):
                     clobber=False
                 )
 
-            if superstate.dest_path not in filelist and "unknown" not in superstate.dest_path:
+            if superstate.dest_path not in filelist:
                 self.duplicates[current_hash].append(superstate.dest_path)
 
             for f in filelist:
@@ -453,7 +460,7 @@ class MainWindow(tk.Tk):
                 self.trash.delete(target)
                 self.canvas.markCacheDirty(target)
 
-            if target_fixed not in self.duplicates[self.current_hash] and "unknown" not in target_fixed:
+            if target_fixed not in self.duplicates[self.current_hash]:
                 self.duplicates[self.current_hash].append(target_fixed)
             self.canvas.markCacheDirty(source)
             self.canvas.markCacheDirty(target_fixed)
@@ -545,24 +552,50 @@ class MainWindow(tk.Tk):
                     continue
             for filename in filelist.copy():
                 if any(ig.lower() in os.path.split(filename)[0].lower() for ig in self.ignore_dirs):
-                    logger.debug(f"{filename} ignored due to '{self.ignore_dirs}' in {base_names}")
+                    logger.debug(f"{filename} ignored due to '{self.ignore_dirs}'")
                     filelist.remove(filename)
 
             if self.opt_hidealts_var.get():
-                base_names = {os.path.splitext(p)[0] for p in filelist}
+                base_names = {os.path.splitext(p)[0] for p in filelist if len(os.path.split(p)[1]) > 18}
+
+                # Add imgur album IDs as bases to match
+                for plain_name in [*base_names]:
+                    match = re.match(r'(.+[\\/][0-9a-z]+ )([0-9]+) (.+)', plain_name)
+                    if match:
+                        base_names.add(match.group(1))
+
                 filelist_no_series = filelist.copy()
 
                 for filename in filelist:
                     # String slicing method
-                    base_name_quick = os.path.splitext(filename)[0]
-                    base_name_quick_stub = base_name_quick[:-12]
-                    base_name_len = len(base_name_quick)
-                    if any((n.startswith(base_name_quick_stub)) and len(n) <= base_name_len and len(n) > (base_name_len - 12)
-                            for n in base_names.difference({base_name_quick})):
-                        logger.debug(f"{filename} has simple base file for '{base_name_quick}' in {base_names}")
+                    our_base_name = os.path.splitext(filename)[0]
+                    other_base_names = base_names.difference({our_base_name})
+
+                    # base_name_quick_stub = base_name_quick[:-12]
+                    # base_name_len = len(base_name_quick)
+                    # logger.info(repr((base_names, base_name_quick)))
+                    # logger.info(base_names.difference({base_name_quick}))
+                    # logger.info(base_name_quick)
+                    # logger.info(base_name_quick_stub)
+                    #
+                    if any(our_base_name.startswith(n) for n in other_base_names):
+                        logger.debug(f"{filename} has simple base file for '{our_base_name}' in {other_base_names}")
                         filelist_no_series.remove(filename)
-                        base_names.remove(base_name_quick)
+                        if our_base_name in base_names:
+                            base_names.remove(our_base_name)
+                        else:
+                            logger.warning(f"{our_base_name} not in {other_base_names}")
                         continue
+                    elif any(our_base_name.startswith(n[:-6]) for n in other_base_names):
+                        logger.debug(f"{filename} has partial base match for '{our_base_name}' in {other_base_names}")
+                        filelist_no_series.remove(filename)
+                        if our_base_name in base_names:
+                            base_names.remove(our_base_name)
+                        else:
+                            logger.warning(f"{our_base_name} not in {other_base_names}")
+                        continue
+                    else:
+                        logger.debug(f"{our_base_name} has no base file for in {other_base_names}")
 
                     # Smart method
                     base_name = findBaseFileForPath(filename)
