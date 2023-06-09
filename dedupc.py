@@ -84,6 +84,7 @@ def makeNameSortTuple(x, good_words=EMPTY_SET, bad_words=EMPTY_SET):
     name = os.path.split(x)[1].lower()
     return (
         +int(bool(re.match(r"^[0-9a-f]{36}\.", name))),  # we do NOT like it when it's a hash
+        +int(bool(re.match(r"^\d{3}_[0-9a-f]{8}_[0-9a-f]{4}_[0-9a-f]{4}_[0-9a-f]{4}_[0-9a-f]{12}\.", name))),  # we do NOT like it when it's a ???
         -sum([name.count(w.lower()) for w in good_words]),  # Put images with good words higher
         +sum([name.count(w.lower()) for w in bad_words]),  # Put images with bad words lower
         -sum([name.count(w.lower()) for w in "-_ +"]),  # Detailed filenames better
@@ -100,7 +101,7 @@ def makeSortTupleAll(x, criteria={}):
 
 
 def explainSort(paths, criteria={}):
-    explanation = "image(-frames, -res, -size, -density), path(-good, +bad, -depth), name(-hash, -good, +bad, -punctuation, +number, )"
+    explanation = "image(-frames, -res, -size, -density), path(-good, +bad, -depth), name(-hash, -???, -good, +bad, -punctuation, +number, )"
     for path in paths:
         explanation += "\n{}\t| {} ".format(
             makeSortTupleAll(path, criteria),

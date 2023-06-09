@@ -38,7 +38,7 @@ def isImage(filename):
     """
     Args:
         filename (str): Path to a file
-    
+
     Returns:
         bool: True if the path points to an image, else False.
     """
@@ -54,7 +54,7 @@ def isVideo(filename):
     """
     Args:
         filename (str): Path to a file
-    
+
     Returns:
         bool: True if the path points to an video, else False.
     """
@@ -119,11 +119,11 @@ def getProcHash(file_path, hashsize, strict=True):
 class db():
 
     """The database object.
-    
+
     Attributes:
         progressbar_allowed (bool): Shows a progress bar for jobs.
         shelvefile (str): The name of the shelved database file
-    
+
     """
 
     def __init__(self, shelvefile, hashsize=None, progressbar_allowed=True, strict_mode=True):
@@ -152,14 +152,14 @@ class db():
                 dbentry = jdb.get(hash, [])
                 if path in dbentry:
                     dbentry.remove(path)
-                    jdb[hash] = dbentry    
+                    jdb[hash] = dbentry
 
             for hash, path in self.journal['validate']:
                 self.validateHash(jdb, hash, path)
 
     def updateRaw(self, old, new, hash):
         """Unused?
-        
+
         Args:
             old (list): The old filepaths
             new (list): The new filepaths
@@ -173,7 +173,7 @@ class db():
 
     def purge(self, keeppaths=[]):
         """Remove hashes without files and files that are not in keeppaths
-        
+
         Args:
             keeppaths (list, optional): Whitelist of paths that can remain
         """
@@ -189,7 +189,7 @@ class db():
 
     def scanDirs(self, image_paths, recheck=False):
         """Scans image paths and updates the database
-        
+
         Args:
             image_paths (list): List of paths to check (globbed)
             recheck (bool, optional): Don't skip known images
@@ -215,14 +215,14 @@ class db():
         # Threading
         def fingerprintImage(db, image_path):
             """Updates database db with phash data of image at image_path.
-            
+
             Args:
                 db (TYPE): Description
                 image_path (TYPE): Description
-            
+
             Returns:
                 TYPE: Description
-            
+
             Raises:
                 NotImplementedError: Description
             """
@@ -317,16 +317,16 @@ class db():
 
     def generateDuplicateFilelists(self, bundleHash=False, threshhold=1, validate=True):
         """Generate lists of files which all have the same hash.
-        
+
         Args:
             bundleHash (bool, optional): Description
             threshhold (int, optional): Description
             validate (bool, optional): Description
-        
+
         Yields:
             tuple: (list, hash) OR
             list: File paths of duplicates
-        
+
         Deleted Parameters:
             progressbar_allowed (bool, optional): Description
         """
@@ -439,7 +439,7 @@ class db():
 
     def validateHash(self, jdb, expected_hash, image_path):
         if not os.path.isfile(image_path):
-            # logger.warning(f"File {image_path} not found during validation!")            
+            # logger.warning(f"File {image_path} not found during validation!")
             if jdb:
                 dbentry = jdb.get(expected_hash, [])
                 if image_path in dbentry:
@@ -450,7 +450,7 @@ class db():
         real_hash = getProcHash(image_path, self.hashsize, strict=self.strict_mode)
         if real_hash != expected_hash:
             logger.warning(f"File {image_path} has wrong {self.hashsize}-hash: expected {expected_hash}, got {real_hash}")
-            
+
             if jdb:
                 dbentry = jdb.get(expected_hash, [])
                 if image_path in dbentry:
