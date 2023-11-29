@@ -609,7 +609,7 @@ class MainWindow(tk.Tk):
 
                 # Validate *now*, with reduced list:
                 for filepath in filelist_no_series.copy():
-                    if not self.db.validateHash(None, bundled_hash, filepath):
+                    if not self.db.validateHash(bundled_hash, filepath):
                         filelist_no_series.remove(filepath)
                         self.db.journal["removed"].append((bundled_hash, filepath))
 

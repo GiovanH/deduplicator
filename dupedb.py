@@ -14,15 +14,25 @@ from PIL import Image   # Image IO libraries
 from cv2 import error as cv2_error
 
 # import shelve           # Persistant data storage
-import snip.jfileutil as ju
+# import snip.jfileutil as ju
 import snip.image
 import snip.data
-from snip.loom import Spool
+# from snip.loom import Spool
 import itertools
-from functools import lru_cache
+# from functools import lru_cache
 import re
 from math import ceil
-import json
+# import json
+import typing
+
+import parallel_threads
+
+import sqlalchemy
+import sqlalchemy.orm as orm
+
+Base = orm.declarative_base()
+
+sqlecho = False
 
 from snip.stream import TriadLogger
 logger = TriadLogger(__name__)
@@ -33,7 +43,6 @@ VALID_IMAGE_EXTENSIONS = {"gif", "jpg", "png", "jpeg", "bmp", "jfif"}
 # Image.MAX_IMAGE_PIXELS = 148306125
 Image.MAX_IMAGE_PIXELS = 160000000
 
-@lru_cache()
 def isImage(filename):
     """
     Args:
@@ -49,7 +58,6 @@ def isImage(filename):
         return False
 
 
-@lru_cache()
 def isVideo(filename):
     """
     Args:
@@ -64,19 +72,24 @@ def isVideo(filename):
         # No extension
         return False
 
-CACHE = {}
-try:
-    import pickle
-    with open("shared_cache.pik", "rb") as fp:
-        CACHE = pickle.load(fp)
-except Exception:
-    logger.warning("No cache", exc_info=True)
+# isfile_cache: dict[str, set[str]] = {}
+
+# def fast_isfile(path):
+#     dirname, filename = os.path.split(path)
+#     if not isfile_cache.get(dirname):
+#         isfile_cache[dirname] = set(os.listdir(dirname))
+#     # print(isfile_cache[dirname], filename)
+#     return (filename in isfile_cache[dirname])
+#     # os.path.isfile
+
+fast_isfile = os.path.isfile
 
 def pathHasGenericName(path):
     path, basename = os.path.split(path)
     return any(b in basename for b in []) \
         or (any(basename.startswith(b) for b in ['unknown', 'image0']) and len(basename.split('_')) < 2) \
         or any(b in path for b in [])
+
 
 def getProcHash(file_path, hashsize, strict=True):
     """Gets a hash for a file. There are no requirements for the type of file.
@@ -91,8 +104,8 @@ def getProcHash(file_path, hashsize, strict=True):
         If the file is a video, this will return the procedural hash of the first frame.
         If the file is anything else, this returns the md5 hash of the file.
     """
-    if CACHE.get(file_path):
-        return CACHE.get(file_path)
+    # if CACHE.get(file_path):
+    #     return CACHE.get(file_path)
     if isImage(file_path):
         if strict and snip.image.framesInImage(file_path) > 1:
             return snip.hash.md5file(file_path)
@@ -115,6 +128,45 @@ def getProcHash(file_path, hashsize, strict=True):
     else:
         return snip.hash.md5file(file_path)
 
+def imageSize(filename):
+    """
+    Args:
+        filename (str): Path to an image on disk
+
+    Returns:
+        int: Pixels in image or 0 if file is not an image.
+
+    Raises:
+        FileNotFoundError: Path is not on disk
+    """
+
+    try:
+        w, h = Image.open(filename).size
+        size = w * h
+        return size
+    except Image.DecompressionBombError:
+        return Image.MAX_IMAGE_PIXELS
+    except FileNotFoundError:
+        logger.error("File not found: " + filename)
+        raise FileNotFoundError(filename)
+    except OSError:
+        # print("WARNING! OS error with file: " + filename)
+        # traceback.print_exc()
+        return 1
+
+
+class FileEntry(Base):
+    __tablename__ = 'file_entry'
+    # id = sqlalchemy.Column(sqlalchemy.Integer, primary_key=True)
+    path = sqlalchemy.Column(sqlalchemy.String, unique=True, primary_key=True)
+    proc_hash = sqlalchemy.Column(sqlalchemy.String)
+    size_b = sqlalchemy.Column(sqlalchemy.Integer)
+    size_px = sqlalchemy.Column(sqlalchemy.Integer)
+
+
+def asdict(obj):
+    return {c.key: getattr(obj, c.key) for c in sqlalchemy.inspect(obj).mapper.column_attrs}
+
 
 class db():
 
@@ -129,6 +181,10 @@ class db():
     def __init__(self, shelvefile, hashsize=None, progressbar_allowed=True, strict_mode=True):
         super(db, self).__init__()
         self.shelvefile = shelvefile
+
+        self.engine = sqlalchemy.create_engine(f"sqlite+pysqlite:///{shelvefile}.sqlite", echo=sqlecho, pool_size=10, max_overflow=20)
+        Base.metadata.create_all(self.engine)
+
         self.progressbar_allowed = progressbar_allowed
         self.strict_mode = strict_mode
 
@@ -140,6 +196,7 @@ class db():
             except:
                 print(repr(shelvefile))
                 logger.error(shelvefile, exc_info=True)
+
         self.hashsize = hashsize
         self.journal = {
             "removed": [],
@@ -147,29 +204,28 @@ class db():
         }
 
     def applyJournal(self):
-        with ju.RotatingHandler(self.shelvefile, basepath="databases", default={}) as jdb:
+        with orm.Session(self.engine) as session:
+            # TODO optimize statement
             for hash, path in self.journal['removed']:
-                dbentry = jdb.get(hash, [])
-                if path in dbentry:
-                    dbentry.remove(path)
-                    jdb[hash] = dbentry
+                session.execute(
+                    sqlalchemy.delete(FileEntry)
+                    .where(FileEntry.proc_hash == hash)
+                    .where(FileEntry.path == path)
+                )
 
-            for hash, path in self.journal['validate']:
-                self.validateHash(jdb, hash, path)
+            session.commit()
 
-    def updateRaw(self, old, new, hash):
-        """Unused?
+        for hash, path in self.journal['validate']:
+            self.validateHash(hash, path)
 
-        Args:
-            old (list): The old filepaths
-            new (list): The new filepaths
-            hash (TYPE): The hash
-        """
-        with ju.RotatingHandler(self.shelvefile, basepath="databases", default={}) as jdb:
-            dbentry = jdb.get(hash, [])
-            dbentry.remove(old)
-            dbentry.append(new)
-            jdb[hash] = dbentry
+    # def updateRaw(self, old, new, hash):
+    #     """Unused?
+
+    #     Args:
+    #         old (list): The old filepaths
+    #         new (list): The new filepaths
+    #         hash (TYPE): The hash
+    #     """
 
     def purge(self, keeppaths=[]):
         """Remove hashes without files and files that are not in keeppaths
@@ -180,14 +236,16 @@ class db():
         keeppaths = set(keeppaths)
         print("Removing files not in provided globs")
 
-        with ju.RotatingHandler(self.shelvefile, basepath="databases", default={}) as jdb:
-            for key in set(jdb.keys()):
-                cached_paths = jdb[key]
-                good_file_set = set(filter(lambda p: p in keeppaths, cached_paths))
-                if good_file_set != set(jdb[key]):
-                    jdb[key] = list(good_file_set)
+        with orm.Session(self.engine) as session:
+            # TODO optimize statement
+            for hash, path in self.journal['removed']:
+                session.execute(
+                    sqlalchemy.delete(FileEntry)
+                    .where(FileEntry.path not in keeppaths)
+                )
+            session.commit()
 
-    def scanDirs(self, image_paths, recheck=False):
+    def scanDirs(self, image_paths: typing.Collection[str], recheck=False) -> None:
         """Scans image paths and updates the database
 
         Args:
@@ -202,18 +260,24 @@ class db():
         # that probably haven't changed.
         # If we're rechecking, we don't need to build this list at all!
 
-        known_paths = set()
+        known_paths: set[str] = set()
 
         if not recheck:
-            with ju.RotatingHandler(self.shelvefile, default={}, basepath="databases", readonly=True) as jdb:
-                known_paths = set(snip.data.flatList(jdb.values()))
+            with orm.Session(self.engine) as session:
+                values = session.scalars(
+                    sqlalchemy.select(FileEntry.path)
+                    # .where(FileEntry)
+                )
+                session.commit()
+            known_paths = set(values)
 
+        # print(known_paths)
         # Prune the shelve file
 
         # SCAN: Scan filesystem for images and hash them.
 
         # Threading
-        def fingerprintImage(db, image_path):
+        def fingerprintImage(image_path):
             """Updates database db with phash data of image at image_path.
 
             Args:
@@ -267,14 +331,17 @@ class db():
             #     logger.warning("File: '%s' has zero hash", image_path)
             #     return
 
+            return (image_path, proc_hash)
+            # session.commit()
+
             # Add the path to the database if it's not already present.
             # Each Key (a hash) has a List value.
             # The list is a list of file paths with that hash.
-            if image_path not in db.get(proc_hash, []):
-                logger.debug("New file: '%s' w/ hash '%s'", image_path, proc_hash)
-                db[proc_hash] = db.get(proc_hash, []) + [image_path]
-            else:
-                logger.debug("File: '%s' w/ hash '%s' already in db", image_path, proc_hash)
+            # if image_path not in jdb.get(proc_hash, []):
+            #     logger.debug("New file: '%s' w/ hash '%s'", image_path, proc_hash)
+            #     db[proc_hash] = jdb.get(proc_hash, []) + [image_path]
+            # else:
+            #     logger.debug("File: '%s' w/ hash '%s' already in db", image_path, proc_hash)
 
         # Reset forcedelete script
         try:
@@ -293,7 +360,7 @@ class db():
 
         # Progress and chunking
         num_images_to_fingerprint = len(images_to_fingerprint)
-        chunk_size = 1000
+        chunk_size = 100
 
         total_chunks = ceil(num_images_to_fingerprint / chunk_size)
 
@@ -305,17 +372,31 @@ class db():
             unit="chunk"
         )
 
-        for (i, image_path_chunk) in fingerprinters:
-            with ju.RotatingHandler(self.shelvefile, default={}, basepath="databases") as jdb:
-                with snip.loom.Spool(10, name="Fingerprint {}/{}".format(i + 1, total_chunks), belay=True) as fpspool:
-                    for image_path in image_path_chunk:
-                        fpspool.enqueue(target=fingerprintImage, args=(jdb, image_path,))
+        for (i, image_path_chunk) in tqdm.tqdm(fingerprinters, total=total_chunks):
+            results = parallel_threads.do_work_helper(
+                fingerprintImage,
+                [(image_path,) for image_path in image_path_chunk]
+            )
+            with orm.Session(self.engine) as session:
+                for (image_path, proc_hash) in filter(bool, results):
+                    value_dict = dict(
+                        proc_hash=proc_hash,
+                        size_b=os.path.getsize(image_path),
+                        size_px=imageSize(image_path)
+                    )
+                    session.execute(
+                        sqlalchemy.dialects.sqlite.insert(FileEntry)  # type: ignore[attr-defined]
+                        .values(
+                            path=image_path,
+                            **value_dict
+                        ).on_conflict_do_update(
+                            index_elements=['path'],
+                            set_=value_dict
+                        )
+                    )
+                session.commit()
 
-    def getRawCopy(self):
-        with ju.RotatingHandler(self.shelvefile, basepath="databases", readonly=True) as db:
-            return db.copy()
-
-    def generateDuplicateFilelists(self, bundleHash=False, threshhold=1, validate=True):
+    def generateDuplicateFilelists(self, bundleHash=False, threshhold: int = 1, validate=True):
         """Generate lists of files which all have the same hash.
 
         Args:
@@ -326,78 +407,79 @@ class db():
         Yields:
             tuple: (list, hash) OR
             list: File paths of duplicates
-
-        Deleted Parameters:
-            progressbar_allowed (bool, optional): Description
         """
         logger.info("Generating information about duplicate images from database")
 
-        db_is_readonly = (not validate)
-
-        with ju.RotatingHandler(self.shelvefile, basepath="databases", readonly=db_is_readonly) as db:
-
-            pbar = None
-            if self.progressbar_allowed:
-                pbar = tqdm.tqdm(
-                    desc="Query",
-                    total=len(db.keys()),
-                    unit="hash"
+        with orm.Session(self.engine) as session:
+            # FileEntry2 = orm.aliased(FileEntry)
+            hashes: list[str] = session.scalars(  # type: ignore[assignment]
+                session.query(
+                    FileEntry.proc_hash,
                 )
+                .group_by(FileEntry.proc_hash)
+                .having(sqlalchemy.func.count(FileEntry.proc_hash) > 1)
+            )
 
-            for key in list(db.keys()):
-                if pbar:
-                    pbar.update()
+            hashes = list(hashes)
+            for key in tqdm.tqdm(hashes):
+                fileset: list[FileEntry] = [*session.scalars(
+                    session.query(FileEntry)
+                    .where(FileEntry.proc_hash == key)
+                )]
 
-                filenames = db[key]
+                filenames: list[str] = [str(entry.path) for entry in fileset]
+
+                # Remove files that no longer exist and remove duplicate filenames
+                filenames = list(filter(fast_isfile, set(filenames)))
 
                 if len(filenames) < threshhold:
                     continue
-
-                # Remove files that no longer exist and remove duplicate filenames
-
-                filenames = list(filter(os.path.isfile, set(filenames)))
 
                 for f1, f2 in itertools.combinations(filenames, 2):
                     if os.path.samefile(f1, f2):
                         logger.warning(f"File {f1} is a samefile duplicate of {f2}")
                         filenames.remove(f2)
+                        with orm.Session(self.engine) as session:
+                            session.execute(
+                                sqlalchemy.delete(FileEntry)
+                                .where(FileEntry.path == f2)
+                            )
+                            session.commit()
 
                 if validate:
                     for image_path in filenames.copy():
-                        if not self.validateHash(db, key, image_path):
+                        if not self.validateHash(key, image_path):
                             filenames.remove(image_path)
-
-                # Cleanup
-                db[key] = filenames
-
-                # Remove hashes with no files
-                if len(db[key]) == 0:
-                    db.pop(key)
-                    continue
+                            with orm.Session(self.engine) as session:
+                                session.execute(
+                                    sqlalchemy.delete(FileEntry)
+                                    .where(FileEntry.path == image_path)
+                                )
+                                session.commit()
 
                 # If there is STILL more than one file with the hash:
                 if len(filenames) >= threshhold:
-                    # logger.debug("Found {0} duplicate images for hash [{1}]".format(len(filenames), key))
-                    if not db_is_readonly:
-                        # Do not return a reference that can modify the database
-                        filenames = filenames.copy()
 
+                    #     # Do not return a reference that can modify the database
+                    #     filenames = filenames.copy()
+
+                    # logger.info(f"Sending {filenames!r}")
                     if bundleHash:
                         yield (filenames, key)
                     else:
                         yield filenames
 
-        if pbar:
-            pbar.close()
+        # if pbar:
+        #     pbar.close()
 
     def prune(self):
         # Removes files that have disappeared
 
-        def _prune(db, key):
+        def _prune(key):
 
             filenames = set()
             for filepath in db[key]:
-                if os.path.isfile(filepath):
+                if fast_isfile(filepath):
                     filenames.add(filepath)
                 else:
                     logger.warning("File '%s' disappeared, removing", filepath)
@@ -412,54 +494,59 @@ class db():
                     logger.warning(f"File {f1} is a samefile duplicate of {f2}")
                     filenames.remove(f2)
 
+            raise NotImplementedError(prune)
             # Cleanup
-            db[key] = list(filenames)
+            # db[key] = list(filenames)
 
-            # Remove hashes with no files
-            if len(db[key]) == 0:
-                db.pop(key)
+            # # Remove hashes with no files
+            # if len(db[key]) == 0:
+            #     db.pop(key)
 
-        with ju.RotatingHandler(self.shelvefile, basepath="databases", readonly=True) as db:
-            dbkeys = list(db.keys())
-            chunk_size = 100*60*5
+        raise NotImplementedError(prune)
+        # with ju.RotatingHandler(self.shelvefile, basepath="databases", readonly=True) as db:
+        # dbkeys = list(sqlalchemy.keys())
+        # chunk_size = 100*60*5
 
-            total_chunks = ceil(len(dbkeys) / chunk_size)
+        # total_chunks = ceil(len(dbkeys) / chunk_size)
 
-            pruners = tqdm.tqdm(
-                iterable=enumerate(snip.data.chunk(dbkeys, chunk_size)),
-                desc="Prune",
-                unit="chunk"
-            )
+        # pruners = tqdm.tqdm(
+        #     iterable=enumerate(snip.data.chunk(dbkeys, chunk_size)),
+        #     desc="Prune",
+        #     unit="chunk"
+        # )
 
-        for (i, keychunk) in pruners:
-            with ju.RotatingHandler(self.shelvefile, basepath="databases", readonly=False) as db:
-                with snip.loom.Spool(20, name="Prune {}/{}".format(i + 1, total_chunks)) as spool:
-                    for key in keychunk:
-                        spool.enqueue(_prune, (db, key,))
+        # for (i, keychunk) in pruners:
+        #     with ju.RotatingHandler(self.shelvefile, basepath="databases", readonly=False) as db:
+        #         with snip.loom.Spool(20, name="Prune {}/{}".format(i + 1, total_chunks)) as spool:
+        #             for key in keychunk:
+        #                 spool.enqueue(_prune, (db, key,))
 
-    def validateHash(self, jdb, expected_hash, image_path):
-        if not os.path.isfile(image_path):
-            # logger.warning(f"File {image_path} not found during validation!")
-            if jdb:
-                dbentry = jdb.get(expected_hash, [])
-                if image_path in dbentry:
-                    dbentry.remove(image_path)
-                    jdb[expected_hash] = dbentry
+    def validateHash(self, expected_hash, image_path):
+        if not fast_isfile(image_path):
+            with orm.Session(self.engine) as session:
+                session.execute(
+                    sqlalchemy.delete(FileEntry)
+                    .where(FileEntry.path == image_path)
+                )
+                session.commit()
             return False
 
-        real_hash = getProcHash(image_path, self.hashsize, strict=self.strict_mode)
+        try:
+            real_hash = getProcHash(image_path, self.hashsize, strict=self.strict_mode)
+        except OSError:
+            traceback.print_exc()
+            return False
+
         if real_hash != expected_hash:
-            logger.warning(f"File {image_path} has wrong {self.hashsize}-hash: expected {expected_hash}, got {real_hash}")
+            logger.warning(f"File {image_path} has wrong {self.hashsize}-hash: expected {expected_hash}, got {real_hash}. Replacing...")
 
-            if jdb:
-                dbentry = jdb.get(expected_hash, [])
-                if image_path in dbentry:
-                    dbentry.remove(image_path)
-                    jdb[expected_hash] = dbentry
-
-                dbentry = jdb.get(real_hash, [])
-                dbentry.append(image_path)
-                jdb[real_hash] = dbentry
+            with orm.Session(self.engine) as session:
+                session.execute(
+                    sqlalchemy.update(FileEntry)
+                    .where(FileEntry.path == image_path)
+                    .values(proc_hash=real_hash)
+                )
+                session.commit()
             return False
         else:
             return True

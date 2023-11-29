@@ -235,13 +235,15 @@ def getDuplicatesToDelete(db, criteria, interactive=False):
 
 def listDuplicates(db):
     for (filepaths, bundled_hash) in db.generateDuplicateFilelists(bundleHash=True, threshhold=2):
+        # print(f"Got {filepaths!r}, {bundled_hash}")
+
         filepaths = sorted(filepaths, key=makeImageSortTuple)
-        logger.info(bundled_hash)
+        print(bundled_hash)
         lfilepaths = len(filepaths)
         tags = [" └─ " if i == lfilepaths - 1 else " ├─ " for i in range(0, lfilepaths)]
         for i, filepath in enumerate(filepaths):
-            logger.info(tags[i] + filepath)
-        logger.info("\n")
+            print(tags[i] + filepath)
+        print("\n")
 
 
 def processRenameOperation(old_path, new_name, bundled_hash, successful_operations, mock=False, clobber=False):
@@ -281,129 +283,130 @@ def processRenameOperation(old_path, new_name, bundled_hash, successful_operatio
     successful_operations.append((old_path, new_path, bundled_hash,))
 
 
-def renameFilesFromDb(db, mock=True, clobber=False):
-    """Processes the entire "rename files" command. 
-    Given duplicate files present in the database, and their hashes, renames them. 
+# def renameFilesFromDb(db, mock=True, clobber=False):
+#     """Processes the entire "rename files" command.
+#     Given duplicate files present in the database, and their hashes, renames them.
 
-    File names are:
-        "[PERCEPTUAL HASH]"         | if file is unique
-        "[PERCEPTUAL HASH]_[CRC32]" | if file has hash collisions.
+#     File names are:
+#         "[PERCEPTUAL HASH]"         | if file is unique
+#         "[PERCEPTUAL HASH]_[CRC32]" | if file has hash collisions.
 
-    Args:
-        shelvefile (str): Name of database to use
-        mock (bool, optional): If true, does not actually perform disk operations.
-        clobber (bool, optional): Should files be overwritten?
-           Due to the CRC32 check, this is usually very safe.
-           As an extra precaution, overwritten files are trashed.
+#     Args:
+#         shelvefile (str): Name of database to use
+#         mock (bool, optional): If true, does not actually perform disk operations.
+#         clobber (bool, optional): Should files be overwritten?
+#            Due to the CRC32 check, this is usually very safe.
+#            As an extra precaution, overwritten files are trashed.
 
-    No Longer Returned:
-        Returns early if
-        - There are no rename operations to attempt
-    """
+#     No Longer Returned:
+#         Returns early if
+#         - There are no rename operations to attempt
+#     """
 
-    # Track successful file operations
-    successful_operations = []
+#     # Track successful file operations
+#     successful_operations = []
 
-    logger.info("Renaming")
-    with snip.loom.Spool(8, name="Renamer") as renamer:
-        for (filepaths, bundled_hash) in db.generateDuplicateFilelists(bundleHash=True, threshhold=1):
-            filepaths = sorted(filepaths, key=makeImageSortTuple)
-            i = 0
-            # for old_file_name in sorted(filepaths, key=makeImageSortTuple):
-            for old_file_path in filepaths:
-                if old_file_path.find("!") > -1:
-                    continue
+#     logger.info("Renaming")
+#     with snip.loom.Spool(8, name="Renamer") as renamer:
+#         for (filepaths, bundled_hash) in db.generateDuplicateFilelists(bundleHash=True, threshhold=1):
+#             logger.info(f"Got {filepaths!r}, {bundled_hash}")
+#             filepaths = sorted(filepaths, key=makeImageSortTuple)
+#             i = 0
+#             # for old_file_name in sorted(filepaths, key=makeImageSortTuple):
+#             for old_file_path in filepaths:
+#                 if old_file_path.find("!") > -1:
+#                     continue
 
-                i += 1
-                (old_file_dir, old_file_name) = os.path.split(old_file_path)
-            # try:
-                new_file_name = "{hash}{suffix}.{ext}".format(
-                    hash=bundled_hash,
-                    suffix=("_{}".format(snip.hash.CRC32(old_file_path)) if len(filepaths) != 1 else ""),
-                    ext=old_file_name.split('.')[-1]
-                )
-                if new_file_name != old_file_name:
-                    renamer.enqueue(
-                        target=processRenameOperation,
-                        args=(old_file_path, new_file_name, bundled_hash, successful_operations),
-                        kwargs={"mock": mock, "clobber": clobber}
-                    )
+#                 i += 1
+#                 (old_file_dir, old_file_name) = os.path.split(old_file_path)
+#             # try:
+#                 new_file_name = "{hash}{suffix}.{ext}".format(
+#                     hash=bundled_hash,
+#                     suffix=("_{}".format(snip.hash.CRC32(old_file_path)) if len(filepaths) != 1 else ""),
+#                     ext=old_file_name.split('.')[-1]
+#                 )
+#                 if new_file_name != old_file_name:
+#                     renamer.enqueue(
+#                         target=processRenameOperation,
+#                         args=(old_file_path, new_file_name, bundled_hash, successful_operations),
+#                         kwargs={"mock": mock, "clobber": clobber}
+#                     )
 
-    # Create undo file
-    os.makedirs("undo", exist_ok=True)
-    ufilename = "undo/undorename_{}_{}.sh".format(db.shelvefile, str(int(time())))
-    logger.info("Creating undo file at {}".format(ufilename))
-    with open(ufilename, "w+", newline='\n') as scriptfile:
-        scriptfile.write("#!/bin/bash\n")
-        for (old, new, bundled_hash) in successful_operations:
-            scriptfile.write('mv -v "{new}" "{old}" # 8^y\n'.format(
-                old=old, new=new))
+#     # Create undo file
+#     os.makedirs("undo", exist_ok=True)
+#     ufilename = "undo/undorename_{}_{}.sh".format(db.shelvefile, str(int(time())))
+#     logger.info("Creating undo file at {}".format(ufilename))
+#     with open(ufilename, "w+", newline='\n') as scriptfile:
+#         scriptfile.write("#!/bin/bash\n")
+#         for (old, new, bundled_hash) in successful_operations:
+#             scriptfile.write('mv -v "{new}" "{old}" # 8^y\n'.format(
+#                 old=old, new=new))
 
-    # Write new filenames to database
-    logger.info("Adding new files to database")
-    for (old, new, bundled_hash) in successful_operations:
-        db.updateRaw(old, new, bundled_hash)
+#     # Write new filenames to database
+#     logger.info("Adding new files to database")
+#     for (old, new, bundled_hash) in successful_operations:
+#         db.updateRaw(old, new, bundled_hash)
 
 
-def renameFilesFromPaths(filepaths, hash_size, mock=True, clobber=False):
-    """Processes the entire "rename files" command. 
-    Given duplicate files present in the database, and their hashes, renames them. 
+# def renameFilesFromPaths(filepaths, hash_size, mock=True, clobber=False):
+#     """Processes the entire "rename files" command.
+#     Given duplicate files present in the database, and their hashes, renames them.
 
-    File names are:
-        "[PERCEPTUAL HASH]"         | if file is unique
-        "[PERCEPTUAL HASH]_[CRC32]" | if file has hash collisions.
+#     File names are:
+#         "[PERCEPTUAL HASH]"         | if file is unique
+#         "[PERCEPTUAL HASH]_[CRC32]" | if file has hash collisions.
 
-    Args:
-        shelvefile (str): Name of database to use
-        mock (bool, optional): If true, does not actually perform disk operations.
-        clobber (bool, optional): Should files be overwritten?
-           Due to the CRC32 check, this is usually very safe.
-           As an extra precaution, overwritten files are trashed.
+#     Args:
+#         shelvefile (str): Name of database to use
+#         mock (bool, optional): If true, does not actually perform disk operations.
+#         clobber (bool, optional): Should files be overwritten?
+#            Due to the CRC32 check, this is usually very safe.
+#            As an extra precaution, overwritten files are trashed.
 
-    No Longer Returned:
-        Returns early if
-        - There are no rename operations to attempt
-    """
+#     No Longer Returned:
+#         Returns early if
+#         - There are no rename operations to attempt
+#     """
 
-    # Track successful file operations
-    successful_operations = []
+#     # Track successful file operations
+#     successful_operations = []
 
-    i = 0
+#     i = 0
 
-    logger.info("Renaming")
-    with snip.loom.Spool(8, name="Renamer") as renamer:
-        for old_file_path in filepaths:
-            if old_file_path.find("!") > -1:
-                continue
+#     logger.info("Renaming")
+#     with snip.loom.Spool(8, name="Renamer") as renamer:
+#         for old_file_path in filepaths:
+#             if old_file_path.find("!") > -1:
+#                 continue
 
-            i += 1
-            (old_file_dir, old_file_name) = os.path.split(old_file_path)
-            try:
-                proc_hash = dupedb.getProcHash(old_file_path, hash_size)
-                new_file_name = "{hash}{suffix}.{ext}".format(
-                    hash=proc_hash,
-                    suffix=("_{}".format(snip.hash.CRC32(old_file_path)) if len(filepaths) != 1 else ""),
-                    ext=old_file_name.split('.')[-1]
-                )
-                if new_file_name != old_file_name:
-                    renamer.enqueue(
-                        target=processRenameOperation,
-                        args=(old_file_path, new_file_name, proc_hash, successful_operations),
-                        kwargs={"mock": mock, "clobber": clobber}
-                    )
-            except AssertionError:
-                traceback.print_exc()
-                continue
+#             i += 1
+#             (old_file_dir, old_file_name) = os.path.split(old_file_path)
+#             try:
+#                 proc_hash = dupedb.getProcHash(old_file_path, hash_size)
+#                 new_file_name = "{hash}{suffix}.{ext}".format(
+#                     hash=proc_hash,
+#                     suffix=("_{}".format(snip.hash.CRC32(old_file_path)) if len(filepaths) != 1 else ""),
+#                     ext=old_file_name.split('.')[-1]
+#                 )
+#                 if new_file_name != old_file_name:
+#                     renamer.enqueue(
+#                         target=processRenameOperation,
+#                         args=(old_file_path, new_file_name, proc_hash, successful_operations),
+#                         kwargs={"mock": mock, "clobber": clobber}
+#                     )
+#             except AssertionError:
+#                 traceback.print_exc()
+#                 continue
 
-    # Create undo file
-    os.makedirs("undo", exist_ok=True)
-    ufilename = "undo/undorename_manual_{}.sh".format(str(int(time())))
-    logger.info("Creating undo file at {}".format(ufilename))
-    with open(ufilename, "w+", newline='\n') as scriptfile:
-        scriptfile.write("#!/bin/bash\n")
-        for (old, new, bundled_hash) in successful_operations:
-            scriptfile.write('mv -v "{new}" "{old}" # 8^y\n'.format(
-                old=old, new=new))
+#     # Create undo file
+#     os.makedirs("undo", exist_ok=True)
+#     ufilename = "undo/undorename_manual_{}.sh".format(str(int(time())))
+#     logger.info("Creating undo file at {}".format(ufilename))
+#     with open(ufilename, "w+", newline='\n') as scriptfile:
+#         scriptfile.write("#!/bin/bash\n")
+#         for (old, new, bundled_hash) in successful_operations:
+#             scriptfile.write('mv -v "{new}" "{old}" # 8^y\n'.format(
+#                 old=old, new=new))
 
 
 def _doSuperDelete(filepaths, bundled_hash, delete, criteria={}, mock=True, explain=logger.info):
@@ -590,33 +593,33 @@ def stringsAlmostEqual(s1, s2, threshhold=1):
                 return False
     return True
 
-def check_similar(db):
-    whole_db = db.getRawCopy()
-    similar_hashes = set()
+# def check_similar(db):
+#     whole_db = db.getRawCopy()
+#     similar_hashes = set()
 
-    all_keys = frozenset(whole_db.keys())
+#     all_keys = frozenset(whole_db.keys())
 
-    def _checkkey(f1):
-        for f2 in all_keys:
-            if f1 != f2 and stringsAlmostEqual(f1, f2, 2):
-                # logger.info(f"Similar hashes: '{f1}', '{f2}'")
-                similar_hashes.add(frozenset([f1, f2]))
+#     def _checkkey(f1):
+#         for f2 in all_keys:
+#             if f1 != f2 and stringsAlmostEqual(f1, f2, 2):
+#                 # logger.info(f"Similar hashes: '{f1}', '{f2}'")
+#                 similar_hashes.add(frozenset([f1, f2]))
 
-    with snip.loom.Spool(32, name="Checking") as spool:
-        for k in tqdm.tqdm(iterable=all_keys, desc="Permutating"):
-            spool.enqueue(_checkkey, (k,))
+#     with snip.loom.Spool(32, name="Checking") as spool:
+#         for k in tqdm.tqdm(iterable=all_keys, desc="Permutating"):
+#             spool.enqueue(_checkkey, (k,))
 
-    for f1, f2 in similar_hashes:
-        whole_db.pop(f1)
-        whole_db.pop(f2)
-    #     message = f"Similar hashes: '{f1}', '{f2}'\n"
-    #     for hash in [f2, f2]:
-    #         for filepath in db[hash]:
-    #             message += f"{hash}: {filepath}\n"
-    #     logger.info(message)
+#     for f1, f2 in similar_hashes:
+#         whole_db.pop(f1)
+#         whole_db.pop(f2)
+#     #     message = f"Similar hashes: '{f1}', '{f2}'\n"
+#     #     for hash in [f2, f2]:
+#     #         for filepath in db[hash]:
+#     #             message += f"{hash}: {filepath}\n"
+#     #     logger.info(message)
 
-    with open("temp.json", "w") as fp:
-        json.dump(whole_db, fp)
+#     with open("temp.json", "w") as fp:
+#         json.dump(whole_db, fp)
 
 def parse_args():
     """
@@ -670,15 +673,15 @@ def parse_args():
     ap.add_argument(
         "-l", "--list", action="store_true",
         help="Show duplicate information on screen.")
-    ap.add_argument(
-        "--listsimilar", action="store_true",
-        help="Finds similar hashes in database")
-    ap.add_argument(
-        "-r", "--renameDb", action="store_true",
-        help="Rename files to their perceptual hash, ordering them by similarity. Renames all images in DB.")
-    ap.add_argument(
-        "--renameFromPaths", action="store_true",
-        help="Rename files to their perceptual hash, ordering them by similarity. Only use images passed directly, not the database.")
+    # ap.add_argument(
+    #     "--listsimilar", action="store_true",
+    #     help="Finds similar hashes in database")
+    # ap.add_argument(
+    #     "-r", "--renameDb", action="store_true",
+    #     help="Rename files to their perceptual hash, ordering them by similarity. Renames all images in DB.")
+    # ap.add_argument(
+    #     "--renameFromPaths", action="store_true",
+    #     help="Rename files to their perceptual hash, ordering them by similarity. Only use images passed directly, not the database.")
     ap.add_argument(
         "-d", "--delete", action="store_true",
         help="Delete duplicate files.")
@@ -716,8 +719,8 @@ def main():
 
     db = dupedb.db(shelvefile, hashsize=args.hashsize, strict_mode=args.strict)
 
-    if args.listsimilar:
-        check_similar(db)
+    # if args.listsimilar:
+    #     check_similar(db)
 
     # Prune first
     if args.prune:
@@ -725,7 +728,7 @@ def main():
 
     # Scan directories for files and populate database
     if args.scanfiles:
-        logger.debug("Scanning for files")
+        logger.info("Scanning for files")
         # print(args.files)
         _image_paths = sum([glob.glob(a, recursive=True) for a in args.scanfiles], [])
 
@@ -748,11 +751,11 @@ def main():
 
 
     # Run commands as requested
-    if args.renameDb:
-        renameFilesFromDb(db, mock=args.mock, clobber=args.clobber)
+    # if args.renameDb:
+    #     renameFilesFromDb(db, mock=args.mock, clobber=args.clobber)
 
-    if args.renameFromPaths:
-        renameFilesFromPaths(image_paths, args.hashsize, mock=args.mock, clobber=args.clobber)
+    # if args.renameFromPaths:
+    #     renameFilesFromPaths(image_paths, args.hashsize, mock=args.mock, clobber=args.clobber)
 
     if args.superdelete:
         superdelete(db, mock=args.mock, criteria=criteria)
