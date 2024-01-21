@@ -24,10 +24,14 @@ import glob
 import functools
 import re
 from pathlib import Path
+import itertools
 
 from dedupc import getSuperState
 
 match_exts = [".jpg", ".gif", ".webm", ".png"]
+
+# TODO: Button that asks for a file prefix, then renames
+# all files in the list (sorted alphabetically)
 
 # from PIL import Image
 # from tkinter import messagebox
@@ -42,6 +46,11 @@ logger = TriadLogger(__name__)
 
 SHELVE_FILE_EXTENSIONS = ["json"]
 
+def tkEnsaftenString(str_):
+    return ''.join([
+        (c if ord(c) in range(65536) else '-')
+        for c in str_
+    ])
 
 def parse_args():
     """Parse args from command line and return the namespace.
@@ -56,6 +65,8 @@ def parse_args():
 
     ap.add_argument(
         "--threshhold", default=2, type=int, help="Min number of duplicates")
+    ap.add_argument(
+        "--limit", default=800, type=int, help="Max number of total files to load")
     ap.add_argument(
         "--good_dirs", nargs='+', default=[],
         help="Substrings in the path to penalize during file sorting.")
@@ -111,9 +122,13 @@ def getSeriesInfo(name):
 
     return None
 
-def altPathOf(path):
+def altPathOf(path, isprefix=False):
     dirname = os.path.dirname(path)
-    stem, ext = os.path.splitext(path)
+    if isprefix:
+        # Paths already have extensions stripped, do not strip more.
+        stem, ext = (path, "")
+    else:
+        stem, ext = os.path.splitext(path)
 
     seriesinfo = getSeriesInfo(stem)
     if seriesinfo:
@@ -201,6 +216,7 @@ class MainWindow(tk.Tk):
             self.ignore_dirs = args.ignore_dirs
             self.whitelist_dirs = args.whitelist_dirs
 
+            self.load_limit = args.limit
 
             self.threshhold = args.threshhold
 
@@ -286,6 +302,7 @@ class MainWindow(tk.Tk):
         self.bind("<m>", self.on_btn_move)
         self.bind("<w>", self.on_btn_move)
         self.bind("<r>", self.on_btn_replace)
+        self.bind("<g>", self.on_btn_makegroup)
         self.bind("<c>", self.on_btn_concat)
 
         self.bind("<s>", self.on_btn_superdelete)
@@ -313,6 +330,7 @@ class MainWindow(tk.Tk):
         btn_move = ttk.Button(self.toolbar, text="Move", takefocus=False, command=self.on_btn_move)
         btn_replace = ttk.Button(self.toolbar, text="Replace", takefocus=False, command=self.on_btn_replace)
         self.btn_concat = btn_concat = ttk.Button(self.toolbar, text="Concatenate", takefocus=False, command=self.on_btn_concat)
+        btn_makegroup = ttk.Button(self.toolbar, text="Make Group", takefocus=False, command=self.on_btn_makegroup)
 
         self.opt_hidealts_var = tk.BooleanVar(value=True)
         opt_hidealts = ttk.Checkbutton(self.toolbar, text="Hide known alts", variable=self.opt_hidealts_var)
@@ -324,7 +342,7 @@ class MainWindow(tk.Tk):
         self.var_progbar_seek = tk.IntVar()
         self.progbar_seek = ttk.Scale(self.toolbar, takefocus=False, variable=self.var_progbar_seek, command=self.on_adjust_seek)
 
-        for btn in [btn_open, btn_delete, btn_move, btn_replace, btn_concat, opt_hidealts, opt_confirm_superdelete, self.progbar_seek]:
+        for btn in [btn_open, btn_delete, btn_move, btn_replace, btn_makegroup, btn_concat, opt_hidealts, opt_confirm_superdelete, self.progbar_seek]:
             btn.grid(row=rowInOrder(), sticky="ew")
 
     def on_adjust_seek(self, event):
@@ -436,8 +454,9 @@ class MainWindow(tk.Tk):
 
     def on_btn_replace(self, event=None):
         current_filelist_relative = self.currentFilelistRelative()
+        filelist_plainnames = [os.path.splitext(p)[0] for p in current_filelist_relative]
         permutations = [
-            altPathOf(p) for p in current_filelist_relative
+            altPathOf(p, isprefix=True) for p in filelist_plainnames
         ]
         target_paths = [current_filelist_relative, permutations + current_filelist_relative]
         results = tkit.MultiSelectDialog(
@@ -532,13 +551,41 @@ class MainWindow(tk.Tk):
         self.duplicates[self.current_hash].append(newFileName)
         self.onHashSelect()
 
+    def on_btn_makegroup(self, event=None):
+        current_filelist_relative = self.currentFilelistRelative()
+
+        prefix_choices = [os.path.splitext(p)[0] for p in current_filelist_relative]
+
+        prefix = tkit.SelectDialog(
+            self,
+            "File prefix: ",
+            prefix_choices
+        ).result
+
+        if prefix:
+            for i, source_path in enumerate(current_filelist_relative):
+                target_prefix = f"{prefix} ({i+1})"
+                target_fixed = target_prefix + os.path.splitext(source_path)[1]
+                try:
+                    # print(source_path, target_fixed)
+                    snip.filesystem.moveFileToFile(source_path, target_fixed, clobber=False)
+                except Exception:
+                    traceback.print_exc()
+                    continue
+
+                if target_fixed not in self.duplicates[self.current_hash]:
+                    self.duplicates[self.current_hash].append(target_fixed)
+                self.canvas.markCacheDirty(source_path)
+                self.canvas.markCacheDirty(target_fixed)
+
+        self.onHashSelect()
     # Load and select
 
     def loadDuplicates(self):
 
         generator = self.db.generateDuplicateFilelists(bundleHash=True, threshhold=self.threshhold, validate=False)
         self.duplicates = {}
-        for (filelist, bundled_hash) in generator:
+        for (filelist, bundled_hash) in itertools.islice(generator, self.load_limit):
             if int(bundled_hash, base=16) == 0:
                 print(f"bundled_hash '{bundled_hash}' is a zero hash.")
                 continue
@@ -551,7 +598,7 @@ class MainWindow(tk.Tk):
                 if not white_ok:
                     continue
             for filename in filelist.copy():
-                if any(ig.lower() in os.path.split(filename)[0].lower() for ig in self.ignore_dirs):
+                if any(ig.lower() in filename.lower() for ig in self.ignore_dirs):
                     logger.debug(f"{filename} ignored due to '{self.ignore_dirs}'")
                     filelist.remove(filename)
 
@@ -648,7 +695,11 @@ class MainWindow(tk.Tk):
 
         self.current_file.set("")
         self.current_filelist = list(filter(self.trash.isfile, all_dupes_for_hash))
-        self.current_filelist = sorted(self.current_filelist, key=makeSortTupleAll)
+        try:
+            self.current_filelist = sorted(self.current_filelist, key=lambda x: makeSortTupleAll(x, criteria=self.criteria))
+        except Exception:
+            logger.error(self.current_filelist, exc_info=True)
+            # raise
         logger.debug("\n" + explainSort(self.current_filelist))
 
         logger.debug("Switched to hash '%s'", self.current_hash)
@@ -662,7 +713,7 @@ class MainWindow(tk.Tk):
             filename_label = f"{filename}*" if filename == superstate.dest_path else filename
             tk.Radiobutton(
                 self.file_picker,
-                text=filename_label,
+                text=tkEnsaftenString(filename_label),
                 variable=self.current_file,
                 value=filename
             ).pack(anchor="w")
