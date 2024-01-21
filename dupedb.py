@@ -39,11 +39,12 @@ logger = TriadLogger(__name__)
 
 # DEBUG_FILE_EXISTS = False
 VALID_IMAGE_EXTENSIONS = {"gif", "jpg", "png", "jpeg", "bmp", "jfif"}
+VALID_VIDEO_EXTENSIONS = {"webm", "mp4"}
 
 # Image.MAX_IMAGE_PIXELS = 148306125
 Image.MAX_IMAGE_PIXELS = 160000000
 
-def isImage(filename):
+def isImage(filename: str) -> bool:
     """
     Args:
         filename (str): Path to a file
@@ -52,13 +53,13 @@ def isImage(filename):
         bool: True if the path points to an image, else False.
     """
     try:
-        return filename.split(".")[-1].lower() in VALID_IMAGE_EXTENSIONS
+        return os.path.splitext(filename)[-1].lower() in VALID_IMAGE_EXTENSIONS
     except IndexError:
         # No extension
         return False
 
 
-def isVideo(filename):
+def isVideo(filename: str) -> bool:
     """
     Args:
         filename (str): Path to a file
@@ -67,7 +68,7 @@ def isVideo(filename):
         bool: True if the path points to an video, else False.
     """
     try:
-        return filename.split(".")[-1].lower() in {"webm", "mp4"}
+        return os.path.splitext(filename)[-1].lower() in VALID_VIDEO_EXTENSIONS
     except IndexError:
         # No extension
         return False
@@ -84,14 +85,15 @@ def isVideo(filename):
 
 fast_isfile = os.path.isfile
 
-def pathHasGenericName(path):
+def pathHasGenericName(path: str) -> bool:
     path, basename = os.path.split(path)
-    return any(b in basename for b in []) \
-        or (any(basename.startswith(b) for b in ['unknown', 'image0']) and len(basename.split('_')) < 2) \
+    plainname, ext = os.path.splitext(basename)
+    return any(b == plainname for b in ['unknown', 'image0']) \
+        or any(basename.startswith(b) for b in []) \
         or any(b in path for b in [])
 
 
-def getProcHash(file_path, hashsize, strict=True):
+def getProcHash(file_path: str, hashsize: int, strict=True) -> str:
     """Gets a hash for a file. There are no requirements for the type of file.
 
     Args:
@@ -128,7 +130,7 @@ def getProcHash(file_path, hashsize, strict=True):
     else:
         return snip.hash.md5file(file_path)
 
-def imageSize(filename):
+def imageSize(filename: str) -> int:
     """
     Args:
         filename (str): Path to an image on disk
@@ -159,12 +161,12 @@ class FileEntry(Base):
     __tablename__ = 'file_entry'
     # id = sqlalchemy.Column(sqlalchemy.Integer, primary_key=True)
     path = sqlalchemy.Column(sqlalchemy.String, unique=True, primary_key=True)
-    proc_hash = sqlalchemy.Column(sqlalchemy.String)
+    proc_hash = sqlalchemy.Column(sqlalchemy.String, index=True)
     size_b = sqlalchemy.Column(sqlalchemy.Integer)
     size_px = sqlalchemy.Column(sqlalchemy.Integer)
 
 
-def asdict(obj):
+def asdict(obj) -> dict:
     return {c.key: getattr(obj, c.key) for c in sqlalchemy.inspect(obj).mapper.column_attrs}
 
 
@@ -203,7 +205,7 @@ class db():
             "validate": []
         }
 
-    def applyJournal(self):
+    def applyJournal(self) -> None:
         with orm.Session(self.engine) as session:
             # TODO optimize statement
             for hash, path in self.journal['removed']:
@@ -227,7 +229,7 @@ class db():
     #         hash (TYPE): The hash
     #     """
 
-    def purge(self, keeppaths=[]):
+    def purge(self, keeppaths=[]) -> None:
         """Remove hashes without files and files that are not in keeppaths
 
         Args:
@@ -238,12 +240,23 @@ class db():
 
         with orm.Session(self.engine) as session:
             # TODO optimize statement
-            for hash, path in self.journal['removed']:
+            # for hash, path in self.journal['removed']:
+            try:
                 session.execute(
                     sqlalchemy.delete(FileEntry)
-                    .where(FileEntry.path not in keeppaths)
+                    .filter(FileEntry.path.in_(list(keeppaths)))
                 )
-            session.commit()
+                session.commit()
+            except sqlalchemy.exc.OperationalError:
+                values = session.scalars(
+                    sqlalchemy.select(FileEntry)
+                ).fetchall()
+                for entry in tqdm.tqdm(values):
+                    # print(entry)
+                    if entry.path not in keeppaths:
+                        print("Removing", entry.path)
+                        session.delete(entry)
+                session.commit()
 
     def scanDirs(self, image_paths: typing.Collection[str], recheck=False) -> None:
         """Scans image paths and updates the database
@@ -277,7 +290,7 @@ class db():
         # SCAN: Scan filesystem for images and hash them.
 
         # Threading
-        def fingerprintImage(image_path):
+        def fingerprintImage(image_path: str) -> typing.Union[None, tuple[str, str]]:
             """Updates database db with phash data of image at image_path.
 
             Args:
@@ -360,7 +373,7 @@ class db():
 
         # Progress and chunking
         num_images_to_fingerprint = len(images_to_fingerprint)
-        chunk_size = 100
+        chunk_size = 80
 
         total_chunks = ceil(num_images_to_fingerprint / chunk_size)
 
@@ -396,7 +409,7 @@ class db():
                     )
                 session.commit()
 
-    def generateDuplicateFilelists(self, bundleHash=False, threshhold: int = 1, validate=True):
+    def generateDuplicateFilelists(self, bundleHash=False, threshhold: int = 1, validate=True) -> typing.Union[str, tuple[str, str]]:
         """Generate lists of files which all have the same hash.
 
         Args:
@@ -422,18 +435,28 @@ class db():
 
             hashes = list(hashes)
             for key in tqdm.tqdm(hashes):
+                # print("query", key)
                 fileset: list[FileEntry] = [*session.scalars(
                     session.query(FileEntry)
                     .where(FileEntry.proc_hash == key)
                 )]
+
+                # print("lenset", fileset)
+
+                if len(fileset) < threshhold:
+                    continue
 
                 filenames: list[str] = [str(entry.path) for entry in fileset]
 
                 # Remove files that no longer exist and remove duplicate filenames
                 filenames = list(filter(fast_isfile, set(filenames)))
 
+                # print("len", filenames)
+
                 if len(filenames) < threshhold:
                     continue
+
+                # print("samefile?", filenames)
 
                 for f1, f2 in itertools.combinations(filenames, 2):
                     if os.path.samefile(f1, f2):
@@ -445,6 +468,8 @@ class db():
                                 .where(FileEntry.path == f2)
                             )
                             session.commit()
+
+                # print("validate", filenames)
 
                 if validate:
                     for image_path in filenames.copy():
@@ -521,7 +546,7 @@ class db():
         #             for key in keychunk:
         #                 spool.enqueue(_prune, (db, key,))
 
-    def validateHash(self, expected_hash, image_path):
+    def validateHash(self, expected_hash: str, image_path: str) -> bool:
         if not fast_isfile(image_path):
             with orm.Session(self.engine) as session:
                 session.execute(
@@ -551,5 +576,5 @@ class db():
         else:
             return True
 
-    def fullValidate(self, threshhold=1):
+    def fullValidate(self, threshhold=1) -> None:
         self.generateDuplicateFilelists(self, threshhold=threshhold, validate=True)

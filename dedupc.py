@@ -18,13 +18,19 @@ import itertools
 import json
 
 from snip.stream import TriadLogger
-logger = TriadLogger(__name__)
+# logger = TriadLogger(__name__)
 
-SHELVE_FILE_EXTENSIONS = ["json"]
-EMPTY_SET = frozenset()
+import logging
+
+logger = logging.getLogger(__name__)
+logger.setLevel(logging.DEBUG)
 
 
-def deleteFiles(filestodelete):
+# SHELVE_FILE_EXTENSIONS = ["json"]
+EMPTY_SET: set = frozenset()
+
+
+def deleteFiles(filestodelete: list[str]) -> None:
     """Trash multiple files
 
     Args:
@@ -35,7 +41,7 @@ def deleteFiles(filestodelete):
             trash.delete(path)
 
 
-def imageSize(filename):
+def imageSize(filename: str) -> int:
     """
     Args:
         filename (str): Path to an image on disk
@@ -62,16 +68,18 @@ def imageSize(filename):
         return 1
 
 
-def makeImageSortTuple(x):
+def makeImageSortTuple(x: str) -> tuple[int, float]:
+    getsize: int = os.path.getsize(x)
+    image_size: int = imageSize(x)
     return (
         -snip.image.framesInImage(x),  # High frames good
-        -imageSize(x),  # High resolution good
-        -os.path.getsize(x),  # High filesize good (if resolution is the same!)
-        -(os.path.getsize(x) / imageSize(x)),  # Density
+        -image_size,  # High resolution good
+        -getsize,  # High filesize good (if resolution is the same!)
+        -(getsize / image_size),  # Density
     )
 
 @lru_cache()
-def makeDirSortTuple(x, good_words=EMPTY_SET, bad_words=EMPTY_SET):
+def makeDirSortTuple(x: str, good_words=EMPTY_SET, bad_words=EMPTY_SET) -> tuple[int, float]:
     dirs = os.path.split(x)[0].lower()
     return (
         -sum([dirs.count(w.lower()) for w in good_words]),  # Put images with good words higher
@@ -80,7 +88,7 @@ def makeDirSortTuple(x, good_words=EMPTY_SET, bad_words=EMPTY_SET):
     )
 
 @lru_cache()
-def makeNameSortTuple(x, good_words=EMPTY_SET, bad_words=EMPTY_SET):
+def makeNameSortTuple(x: str, good_words=EMPTY_SET, bad_words=EMPTY_SET) -> tuple[int, float]:
     name = os.path.split(x)[1].lower()
     return (
         +int(bool(re.match(r"^[0-9a-f]{36}\.", name))),  # we do NOT like it when it's a hash
@@ -92,7 +100,7 @@ def makeNameSortTuple(x, good_words=EMPTY_SET, bad_words=EMPTY_SET):
     )
 
 
-def makeSortTupleAll(x, criteria={}):
+def makeSortTupleAll(x: str, criteria={}):
     return (
         makeImageSortTuple(x),
         makeDirSortTuple(x, good_words=criteria.get("good_dirs", EMPTY_SET), bad_words=criteria.get("bad_dirs", EMPTY_SET)),
@@ -100,7 +108,7 @@ def makeSortTupleAll(x, criteria={}):
     )
 
 
-def explainSort(paths, criteria={}):
+def explainSort(paths: str, criteria={}) -> str:
     explanation = "image(-frames, -res, -size, -density), path(-good, +bad, -depth), name(-hash, -???, -good, +bad, -punctuation, +number, )"
     for path in paths:
         explanation += "\n{}\t| {} ".format(
@@ -158,7 +166,7 @@ def runMagickCommand(shelvefile, precmd, midcmd, fileact, sortedFilenames, bundl
         # raise subprocess.CalledProcessError(result.returncode, command, result).
 
 
-def getDuplicatesToDelete(db, criteria, interactive=False):
+def getDuplicatesToDelete(db, criteria, interactive=False) -> list[str]:
     """Given a database, generate a list of duplicate files to delete.
 
     Args:
@@ -181,7 +189,7 @@ def getDuplicatesToDelete(db, criteria, interactive=False):
             print(f"bundled_hash '{bundled_hash}' is a zero hash.")
             continue
 
-        filelist = sorted(filelist, key=makeImageSortTuple)
+        filelist = sorted(filelist, key=lambda x: makeImageSortTuple(x, criteria))
         if interactive:
             # The user gets to pick the image to keep.
             # Print up a pretty menu.
@@ -283,133 +291,7 @@ def processRenameOperation(old_path, new_name, bundled_hash, successful_operatio
     successful_operations.append((old_path, new_path, bundled_hash,))
 
 
-# def renameFilesFromDb(db, mock=True, clobber=False):
-#     """Processes the entire "rename files" command.
-#     Given duplicate files present in the database, and their hashes, renames them.
-
-#     File names are:
-#         "[PERCEPTUAL HASH]"         | if file is unique
-#         "[PERCEPTUAL HASH]_[CRC32]" | if file has hash collisions.
-
-#     Args:
-#         shelvefile (str): Name of database to use
-#         mock (bool, optional): If true, does not actually perform disk operations.
-#         clobber (bool, optional): Should files be overwritten?
-#            Due to the CRC32 check, this is usually very safe.
-#            As an extra precaution, overwritten files are trashed.
-
-#     No Longer Returned:
-#         Returns early if
-#         - There are no rename operations to attempt
-#     """
-
-#     # Track successful file operations
-#     successful_operations = []
-
-#     logger.info("Renaming")
-#     with snip.loom.Spool(8, name="Renamer") as renamer:
-#         for (filepaths, bundled_hash) in db.generateDuplicateFilelists(bundleHash=True, threshhold=1):
-#             logger.info(f"Got {filepaths!r}, {bundled_hash}")
-#             filepaths = sorted(filepaths, key=makeImageSortTuple)
-#             i = 0
-#             # for old_file_name in sorted(filepaths, key=makeImageSortTuple):
-#             for old_file_path in filepaths:
-#                 if old_file_path.find("!") > -1:
-#                     continue
-
-#                 i += 1
-#                 (old_file_dir, old_file_name) = os.path.split(old_file_path)
-#             # try:
-#                 new_file_name = "{hash}{suffix}.{ext}".format(
-#                     hash=bundled_hash,
-#                     suffix=("_{}".format(snip.hash.CRC32(old_file_path)) if len(filepaths) != 1 else ""),
-#                     ext=old_file_name.split('.')[-1]
-#                 )
-#                 if new_file_name != old_file_name:
-#                     renamer.enqueue(
-#                         target=processRenameOperation,
-#                         args=(old_file_path, new_file_name, bundled_hash, successful_operations),
-#                         kwargs={"mock": mock, "clobber": clobber}
-#                     )
-
-#     # Create undo file
-#     os.makedirs("undo", exist_ok=True)
-#     ufilename = "undo/undorename_{}_{}.sh".format(db.shelvefile, str(int(time())))
-#     logger.info("Creating undo file at {}".format(ufilename))
-#     with open(ufilename, "w+", newline='\n') as scriptfile:
-#         scriptfile.write("#!/bin/bash\n")
-#         for (old, new, bundled_hash) in successful_operations:
-#             scriptfile.write('mv -v "{new}" "{old}" # 8^y\n'.format(
-#                 old=old, new=new))
-
-#     # Write new filenames to database
-#     logger.info("Adding new files to database")
-#     for (old, new, bundled_hash) in successful_operations:
-#         db.updateRaw(old, new, bundled_hash)
-
-
-# def renameFilesFromPaths(filepaths, hash_size, mock=True, clobber=False):
-#     """Processes the entire "rename files" command.
-#     Given duplicate files present in the database, and their hashes, renames them.
-
-#     File names are:
-#         "[PERCEPTUAL HASH]"         | if file is unique
-#         "[PERCEPTUAL HASH]_[CRC32]" | if file has hash collisions.
-
-#     Args:
-#         shelvefile (str): Name of database to use
-#         mock (bool, optional): If true, does not actually perform disk operations.
-#         clobber (bool, optional): Should files be overwritten?
-#            Due to the CRC32 check, this is usually very safe.
-#            As an extra precaution, overwritten files are trashed.
-
-#     No Longer Returned:
-#         Returns early if
-#         - There are no rename operations to attempt
-#     """
-
-#     # Track successful file operations
-#     successful_operations = []
-
-#     i = 0
-
-#     logger.info("Renaming")
-#     with snip.loom.Spool(8, name="Renamer") as renamer:
-#         for old_file_path in filepaths:
-#             if old_file_path.find("!") > -1:
-#                 continue
-
-#             i += 1
-#             (old_file_dir, old_file_name) = os.path.split(old_file_path)
-#             try:
-#                 proc_hash = dupedb.getProcHash(old_file_path, hash_size)
-#                 new_file_name = "{hash}{suffix}.{ext}".format(
-#                     hash=proc_hash,
-#                     suffix=("_{}".format(snip.hash.CRC32(old_file_path)) if len(filepaths) != 1 else ""),
-#                     ext=old_file_name.split('.')[-1]
-#                 )
-#                 if new_file_name != old_file_name:
-#                     renamer.enqueue(
-#                         target=processRenameOperation,
-#                         args=(old_file_path, new_file_name, proc_hash, successful_operations),
-#                         kwargs={"mock": mock, "clobber": clobber}
-#                     )
-#             except AssertionError:
-#                 traceback.print_exc()
-#                 continue
-
-#     # Create undo file
-#     os.makedirs("undo", exist_ok=True)
-#     ufilename = "undo/undorename_manual_{}.sh".format(str(int(time())))
-#     logger.info("Creating undo file at {}".format(ufilename))
-#     with open(ufilename, "w+", newline='\n') as scriptfile:
-#         scriptfile.write("#!/bin/bash\n")
-#         for (old, new, bundled_hash) in successful_operations:
-#             scriptfile.write('mv -v "{new}" "{old}" # 8^y\n'.format(
-#                 old=old, new=new))
-
-
-def _doSuperDelete(filepaths, bundled_hash, delete, criteria={}, mock=True, explain=logger.info):
+def _doSuperDelete(filepaths, bundled_hash, delete, criteria={}, mock=True, explain=logger.info, no_debug=False) -> str:
     image_rating = {f: makeImageSortTuple(f) for f in filepaths}
     sorted_by_best_image = sorted(filepaths, key=image_rating.get)
 
@@ -417,17 +299,21 @@ def _doSuperDelete(filepaths, bundled_hash, delete, criteria={}, mock=True, expl
     best_image = sorted_by_best_image[0]
     best_dir = sorted(filepaths, key=lambda x: makeDirSortTuple(x, criteria.get("good_dirs", EMPTY_SET), criteria.get("bad_dirs", EMPTY_SET)))[0]
     best_name = sorted(filepaths, key=lambda x: makeNameSortTuple(x, criteria.get("good_names", EMPTY_SET), criteria.get("bad_names", EMPTY_SET)))[0]
-    logger.debug(explainSort(filepaths, criteria))
-    logger.debug("Best image: '%s'", best_image)
-    logger.debug("Best dir:   '%s'", os.path.split(best_dir)[0])
-    logger.debug("Best name:  '%s'", os.path.split(best_name)[1])
+
+    if not no_debug:
+        logger.debug(explainSort(filepaths, criteria))
+        logger.debug("Best image: '%s'", best_image)
+        logger.debug("Best dir:   '%s'", os.path.split(best_dir)[0])
+        logger.debug("Best name:  '%s'", os.path.split(best_name)[1])
 
     files_to_delete = sorted_by_best_image[1:]
     assert best_image not in files_to_delete
 
     # Construct best path
     best_path = os.path.join(os.path.split(best_dir)[0], os.path.split(best_name)[1])
-    logger.debug("Best path:  '%s'", best_path)
+
+    if not no_debug:
+        logger.debug("Best path:  '%s'", best_path)
 
     best_path_fix = os.path.splitext(best_path)[0] + os.path.splitext(best_image)[1]
     if best_path_fix not in filepaths:
@@ -479,7 +365,7 @@ def _doSuperDelete(filepaths, bundled_hash, delete, criteria={}, mock=True, expl
 
 SuperState = namedtuple("SuperState", ["best_image", "dest_path", "deletions", "needs_move", "explain_sort", "explain_string"])
 
-def getSuperState(filepaths, bundled_hash, criteria={}):
+def getSuperState(filepaths, bundled_hash, criteria={}) -> SuperState:
     image_rating = {f: makeImageSortTuple(f) for f in filepaths}
     dir_rating = {f: makeDirSortTuple(f, criteria.get("good_dirs", EMPTY_SET), criteria.get("bad_dirs", EMPTY_SET)) for f in filepaths}
     name_rating = {f: makeNameSortTuple(f, criteria.get("good_names", EMPTY_SET), criteria.get("bad_names", EMPTY_SET)) for f in filepaths}
@@ -574,13 +460,21 @@ def getSuperState(filepaths, bundled_hash, criteria={}):
         explain_string=explanation
     )
 
-def superdelete(db, mock, criteria):
+def superdelete(db, mock, criteria) -> None:
     with snip.filesystem.Trash() as trash:
-        for (filepaths, bundled_hash) in db.generateDuplicateFilelists(bundleHash=True, threshhold=2, validate=True):
-            try:
-                _doSuperDelete(filepaths, bundled_hash, trash.delete, criteria, mock)
-            except OSError:
-                logger.error("Couldn't finish delete for hash '%s'", bundled_hash, exc_info=True)
+        # with snip.loom.Spool(4, name="Superdelete") as spool:
+            print("Scanning for superdelete")
+            for (filepaths, bundled_hash) in db.generateDuplicateFilelists(bundleHash=True, threshhold=2, validate=True):
+                # spool.enqueue(
+                #     _doSuperDelete,
+                #     (filepaths, bundled_hash, trash.delete, criteria, mock),
+                #     dict(no_debug=True)
+                # )
+                # pass
+                try:
+                    _doSuperDelete(filepaths, bundled_hash, trash.delete, criteria, mock, no_debug=True)
+                except OSError:
+                    logger.error("Couldn't finish delete for hash '%s'", bundled_hash, exc_info=True)
 
 @lru_cache()
 def stringsAlmostEqual(s1, s2, threshhold=1):
@@ -730,7 +624,7 @@ def main():
     if args.scanfiles:
         logger.info("Scanning for files")
         # print(args.files)
-        _image_paths = sum([glob.glob(a, recursive=True) for a in args.scanfiles], [])
+        _image_paths = itertools.chain(*[glob.glob(a, recursive=True) for a in args.scanfiles])
 
         # for k in _image_paths:
         #     print(k, *((j, k.find(j) == -1,) for j in args.files_exempt))
@@ -744,6 +638,7 @@ def main():
         # File handling and fallbacks
 
         if args.purge:
+            logger.info("Purging extra files from db")
             db.purge(keeppaths=image_paths)
 
         logger.info("Fingerprinting")
