@@ -17,6 +17,9 @@ import tqdm
 import itertools
 import json
 
+from typing import *
+import typing_extensions
+
 from snip.stream import TriadLogger
 # logger = TriadLogger(__name__)
 
@@ -27,7 +30,7 @@ logger.setLevel(logging.DEBUG)
 
 
 # SHELVE_FILE_EXTENSIONS = ["json"]
-EMPTY_SET: set = frozenset()
+EMPTY_SET: frozenset = frozenset()
 
 
 def deleteFiles(filestodelete: list[str]) -> None:
@@ -58,7 +61,7 @@ def imageSize(filename: str) -> int:
         size = w * h
         return size
     except Image.DecompressionBombError:
-        return Image.MAX_IMAGE_PIXELS
+        return Image.MAX_IMAGE_PIXELS # type: ignore
     except FileNotFoundError:
         logger.error("File not found: " + filename)
         raise FileNotFoundError(filename)
@@ -68,7 +71,7 @@ def imageSize(filename: str) -> int:
         return 1
 
 
-def makeImageSortTuple(x: str) -> tuple[int, float]:
+def makeImageSortTuple(x: str, good_words=EMPTY_SET, bad_words=EMPTY_SET):
     getsize: int = os.path.getsize(x)
     image_size: int = imageSize(x)
     return (
@@ -76,10 +79,12 @@ def makeImageSortTuple(x: str) -> tuple[int, float]:
         -image_size,  # High resolution good
         -getsize,  # High filesize good (if resolution is the same!)
         -(getsize / image_size),  # Density
+        -sum([x.count(w.lower()) for w in good_words]),  # Put images with good words higher
+        +sum([x.count(w.lower()) for w in bad_words]),  # Put images with bad words lower
     )
 
 @lru_cache()
-def makeDirSortTuple(x: str, good_words=EMPTY_SET, bad_words=EMPTY_SET) -> tuple[int, float]:
+def makeDirSortTuple(x: str, good_words=EMPTY_SET, bad_words=EMPTY_SET):
     dirs = os.path.split(x)[0].lower()
     return (
         -sum([dirs.count(w.lower()) for w in good_words]),  # Put images with good words higher
@@ -88,7 +93,7 @@ def makeDirSortTuple(x: str, good_words=EMPTY_SET, bad_words=EMPTY_SET) -> tuple
     )
 
 @lru_cache()
-def makeNameSortTuple(x: str, good_words=EMPTY_SET, bad_words=EMPTY_SET) -> tuple[int, float]:
+def makeNameSortTuple(x: str, good_words=EMPTY_SET, bad_words=EMPTY_SET):
     name = os.path.split(x)[1].lower()
     return (
         +int(bool(re.match(r"^[0-9a-f]{36}\.", name))),  # we do NOT like it when it's a hash
@@ -102,13 +107,13 @@ def makeNameSortTuple(x: str, good_words=EMPTY_SET, bad_words=EMPTY_SET) -> tupl
 
 def makeSortTupleAll(x: str, criteria={}):
     return (
-        makeImageSortTuple(x),
+        makeImageSortTuple(x, good_words=criteria.get("good_dirs", EMPTY_SET), bad_words=criteria.get("bad_dirs", EMPTY_SET)),
         makeDirSortTuple(x, good_words=criteria.get("good_dirs", EMPTY_SET), bad_words=criteria.get("bad_dirs", EMPTY_SET)),
         makeNameSortTuple(x, good_words=criteria.get("good_names", EMPTY_SET), bad_words=criteria.get("bad_names", EMPTY_SET)),
     )
 
 
-def explainSort(paths: str, criteria={}) -> str:
+def explainSort(paths: list[str], criteria={}) -> str:
     explanation = "image(-frames, -res, -size, -density), path(-good, +bad, -depth), name(-hash, -???, -good, +bad, -punctuation, +number, )"
     for path in paths:
         explanation += "\n{}\t| {} ".format(
@@ -189,7 +194,10 @@ def getDuplicatesToDelete(db, criteria, interactive=False) -> list[str]:
             print(f"bundled_hash '{bundled_hash}' is a zero hash.")
             continue
 
-        filelist = sorted(filelist, key=lambda x: makeImageSortTuple(x, criteria))
+        filelist = sorted(filelist, key=lambda x: makeImageSortTuple(x, good_words=criteria.get("good_dirs", EMPTY_SET), bad_words=criteria.get("bad_dirs", EMPTY_SET)))
+        
+        goingtokeep: str = None
+        goingtodelete: list[str] = None
         if interactive:
             # The user gets to pick the image to keep.
             # Print up a pretty menu.

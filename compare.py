@@ -1,4 +1,5 @@
-import argparse         # Argument parsing
+import argparse
+import collections         # Argument parsing
 import os.path          # isfile() method
 from tkinter import filedialog
 import cv2
@@ -21,12 +22,13 @@ from dedupc import makeSortTupleAll, explainSort
 
 import glob
 
-import functools
 import re
 from pathlib import Path
 import itertools
 
 from dedupc import getSuperState
+
+from typing import *
 
 match_exts = [".jpg", ".gif", ".webm", ".png"]
 
@@ -46,13 +48,13 @@ logger = TriadLogger(__name__)
 
 SHELVE_FILE_EXTENSIONS = ["json"]
 
-def tkEnsaftenString(str_):
+def tkEnsaftenString(str_: str):
     return ''.join([
         (c if ord(c) in range(65536) else '-')
         for c in str_
     ])
 
-def parse_args():
+def parse_args() -> argparse.Namespace:
     """Parse args from command line and return the namespace.
 
     Returns
@@ -66,7 +68,7 @@ def parse_args():
     ap.add_argument(
         "--threshhold", default=2, type=int, help="Min number of duplicates")
     ap.add_argument(
-        "--limit", default=800, type=int, help="Max number of total files to load")
+        "--limit", default=400, type=int, help="Max number of total files to load")
     ap.add_argument(
         "--good_dirs", nargs='+', default=[],
         help="Substrings in the path to penalize during file sorting.")
@@ -91,8 +93,9 @@ def parse_args():
     args.bad_names = {s.replace(r"\-", "-") for s in args.bad_names}
     return args
 
-def getSeriesInfo(name):
-    from collections import namedtuple
+SeriesInfo = collections.namedtuple('SeriesInfo', ["no", "style"])
+
+def getSeriesInfo(name: str) -> SeriesInfo | None:
     patterns = [
         # (r"_0(\d)_1$",    "_0<#>_1"),    # Patreon
         # (r"o(\d+)_1280$", "o<#>_1280"),  # Tumblr
@@ -118,11 +121,11 @@ def getSeriesInfo(name):
             if i > 1000:
                 continue
             style = re.sub(pattern, stylem, name)
-            return namedtuple('SeriesInfo', ["no", "style"])(i, style)
+            return SeriesInfo(i, style)
 
     return None
 
-def altPathOf(path, isprefix=False):
+def altPathOf(path: str, isprefix: bool = False):
     dirname = os.path.dirname(path)
     if isprefix:
         # Paths already have extensions stripped, do not strip more.
@@ -132,8 +135,8 @@ def altPathOf(path, isprefix=False):
 
     seriesinfo = getSeriesInfo(stem)
     if seriesinfo:
-        i = seriesinfo.no
-        style = seriesinfo.style
+        i: int = seriesinfo.no
+        style: str = seriesinfo.style
     else:
         i = 1
         style = stem + " (<#>)"
@@ -155,7 +158,7 @@ def altPathOf(path, isprefix=False):
         assert checks < 100
     return working_path
 
-def findBaseFileForPath(path):
+def findBaseFileForPath(path: str):
     name = os.path.splitext(path)[0]
 
     seriesinfo = getSeriesInfo(name)
@@ -213,12 +216,12 @@ class MainWindow(tk.Tk):
             }
             logger.debug(self.criteria)
 
-            self.ignore_dirs = args.ignore_dirs
-            self.whitelist_dirs = args.whitelist_dirs
+            self.ignore_dirs: list = args.ignore_dirs
+            self.whitelist_dirs: list = args.whitelist_dirs
 
-            self.load_limit = args.limit
+            self.load_limit: int = args.limit
 
-            self.threshhold = args.threshhold
+            self.threshhold: int = args.threshhold
 
             self.initwindow()
 
@@ -227,7 +230,7 @@ class MainWindow(tk.Tk):
                     self.pick_and_open_shelvefile()
                 else:
                     self.open_shelvefile(args.shelvefile)
-            except TclError as e:
+            except TclError:
                 logger.error("No duplicate images in selection.")
                 self.destroy()
                 return
@@ -240,7 +243,7 @@ class MainWindow(tk.Tk):
             print("Window init aborted")
             self.destroy()
 
-    def pick_and_open_shelvefile(self):
+    def pick_and_open_shelvefile(self) -> None:
         self.open_shelvefile(
             os.path.splitext(
                 os.path.split(
@@ -249,41 +252,41 @@ class MainWindow(tk.Tk):
             )[0]
         )
 
-    def open_shelvefile(self, shelvefile):
+    def open_shelvefile(self, shelvefile) -> None:
         if not shelvefile:
             return
 
         self.db = dupedb.db(shelvefile, strict_mode=False)
         self.trash = snip.filesystem.Trash(verbose=True)
 
-        self.current_hash = ""
+        self.current_hash: str = ""
 
-        self.current_file = tk.StringVar()
+        self.current_file: tk.StringVar = tk.StringVar()
         self.current_file.set("")
         self.current_file.trace("w", self.onFileSelect)
 
-        self.current_filelist = []
+        self.current_filelist: list[str] = []
 
         self.loadDuplicates()
 
-    def destroy(self):
+    def destroy(self) -> None:
         self.db.applyJournal()
         self.trash.finish()
         super().destroy()
 
-    def initwindow(self):
+    def initwindow(self) -> None:
 
         self.geometry("950x800")
 
-        self.infobox = tk.Label(self)
+        self.infobox: tk.Label = tk.Label(self)
         self.infobox.grid(column=1, row=0, sticky="ew")
 
-        self.file_picker = tk.Frame(self, relief=tk.GROOVE)
+        self.file_picker: tk.Frame = tk.Frame(self, relief=tk.GROOVE)
         self.file_picker.grid(column=1, row=1, sticky="nsw")
         # Minimium size here to avoid some expensive canvas resizing
         self.grid_rowconfigure(1, minsize=82)
 
-        self.canvas = ContentCanvas(self, takefocus=True)
+        self.canvas: ContentCanvas = ContentCanvas(self, takefocus=True)
         self.canvas.grid(column=1, row=2, sticky="nsew")
         self.columnconfigure(1, weight=1)
         self.rowconfigure(2, weight=1)
@@ -310,12 +313,12 @@ class MainWindow(tk.Tk):
 
         self.canvas.focus()
 
-        self.toolbar = tk.Frame(self)
+        self.toolbar: tk.Frame = tk.Frame(self)
         self.toolbar.grid(column=0, row=0, rowspan=3, sticky="ns")
 
-        inOrderRow = 0
+        inOrderRow: int = 0
 
-        def rowInOrder():
+        def rowInOrder() -> int:
             """Helper function to increment in-order elements"""
             nonlocal inOrderRow
             inOrderRow += 1
@@ -399,10 +402,10 @@ class MainWindow(tk.Tk):
 
     # Process actions
 
-    def currentFilelistRelative(self):
-        filelist = self.current_filelist
-        current_index = self.current_filelist.index(self.current_file.get())
-        rotated = filelist[current_index:] + filelist[:current_index]
+    def currentFilelistRelative(self) -> list[str]:
+        filelist: list[str] = self.current_filelist
+        current_index: int = self.current_filelist.index(self.current_file.get())
+        rotated: list[str] = filelist[current_index:] + filelist[:current_index]
         # logger.debug(f"Rotating filelist by {current_index}")
         # logger.debug(filelist)
         # logger.debug(rotated)
@@ -421,10 +424,10 @@ class MainWindow(tk.Tk):
         self.canvas.markCacheDirty(filepath)
         self.onHashSelect()
 
-    def on_btn_superdelete(self, event=None):
+    def on_btn_superdelete(self, event=None) -> None:
 
-        current_hash = self.hash_picker.get()
-        filelist = self.current_filelist
+        current_hash: str = self.hash_picker.get()
+        filelist: list[str] = self.current_filelist
 
         superstate = getSuperState(filelist, current_hash, criteria=self.criteria)
         logger.debug(superstate)
@@ -453,13 +456,13 @@ class MainWindow(tk.Tk):
             self.nextHash()
 
     def on_btn_replace(self, event=None):
-        current_filelist_relative = self.currentFilelistRelative()
-        filelist_plainnames = [os.path.splitext(p)[0] for p in current_filelist_relative]
-        permutations = [
+        current_filelist_relative: list[str] = self.currentFilelistRelative()
+        filelist_plainnames: list[str] = [os.path.splitext(p)[0] for p in current_filelist_relative]
+        permutations: list[str] = [
             altPathOf(p, isprefix=True) for p in filelist_plainnames
         ]
-        target_paths = [current_filelist_relative, permutations + current_filelist_relative]
-        results = tkit.MultiSelectDialog(
+        target_paths: list[list[str]] = [current_filelist_relative, permutations + current_filelist_relative]
+        results: Optional[list[Any]] = tkit.MultiSelectDialog(
             self,
             ["Source: ", "Target: "],
             target_paths,
@@ -469,7 +472,7 @@ class MainWindow(tk.Tk):
         if results:
             source, target = results
 
-            target_fixed = os.path.splitext(target)[0] + os.path.splitext(source)[1]
+            target_fixed: str = os.path.splitext(target)[0] + os.path.splitext(source)[1]
 
             # TODO: "Are you sure" on clobber
             snip.filesystem.moveFileToFile(source, target_fixed, clobber=False)
@@ -502,7 +505,7 @@ class MainWindow(tk.Tk):
         new_directory_choices.remove(default_new_directory)
         new_directory_choices.insert(0, default_new_directory)
 
-        results = tkit.MultiSelectDialog(
+        results: Optional[list[Any]] = tkit.MultiSelectDialog(
             self,
             ["Source: ", "New directory: "],
             [
@@ -552,11 +555,11 @@ class MainWindow(tk.Tk):
         self.onHashSelect()
 
     def on_btn_makegroup(self, event=None):
-        current_filelist_relative = self.currentFilelistRelative()
+        current_filelist_relative: list[str] = self.currentFilelistRelative()
 
-        prefix_choices = [os.path.splitext(p)[0] for p in current_filelist_relative]
+        prefix_choices: list[str] = [os.path.splitext(p)[0] for p in current_filelist_relative]
 
-        prefix = tkit.SelectDialog(
+        prefix: Optional[str] = tkit.SelectDialog(
             self,
             "File prefix: ",
             prefix_choices
@@ -581,96 +584,107 @@ class MainWindow(tk.Tk):
         self.onHashSelect()
     # Load and select
 
-    def loadDuplicates(self):
+    def loadDuplicates(self) -> None:
 
-        generator = self.db.generateDuplicateFilelists(bundleHash=True, threshhold=self.threshhold, validate=False)
-        self.duplicates = {}
-        for (filelist, bundled_hash) in itertools.islice(generator, self.load_limit):
-            if int(bundled_hash, base=16) == 0:
-                print(f"bundled_hash '{bundled_hash}' is a zero hash.")
-                continue
-            if self.whitelist_dirs:
-                white_ok = False
-                for white_dir in self.whitelist_dirs:
-                    if any(white_dir.lower() in os.path.split(filename)[0].lower() for filename in filelist):
-                        white_ok = True
-                        break
-                if not white_ok:
+        self.duplicates: dict[str, list[str]] = {}
+
+        def _filteredFileLists() -> Iterator[tuple[list[str], str]]:
+            generator: Iterator[tuple[list[str], str]] = self.db.generateDuplicateFilelists(bundleHash=True, threshhold=self.threshhold, validate=False)
+            for (filelist, bundled_hash) in generator:
+                if int(bundled_hash, base=16) == 0:
+                    print(f"bundled_hash '{bundled_hash}' is a zero hash.")
                     continue
-            for filename in filelist.copy():
-                if any(ig.lower() in filename.lower() for ig in self.ignore_dirs):
-                    logger.debug(f"{filename} ignored due to '{self.ignore_dirs}'")
-                    filelist.remove(filename)
+                if self.whitelist_dirs:
+                    white_ok = False
+                    for white_dir in self.whitelist_dirs:
+                        if any(white_dir.lower() in os.path.split(filename)[0].lower() for filename in filelist):
+                            white_ok = True
+                            break
+                    if not white_ok:
+                        continue
+                for filename in filelist.copy():
+                    if any(ig.lower() in filename.lower() for ig in self.ignore_dirs):
+                        logger.debug(f"{filename} ignored due to ignore_dirs '{self.ignore_dirs}'")
+                        filelist.remove(filename)
 
-            if self.opt_hidealts_var.get():
-                base_names = {os.path.splitext(p)[0] for p in filelist if len(os.path.split(p)[1]) > 18}
+                # yield (filelist, bundled_hash)
+                if self.opt_hidealts_var.get():
+                    base_names: set[str] = {os.path.splitext(p)[0] for p in filelist if len(os.path.split(p)[1]) > 18}
 
-                # Add imgur album IDs as bases to match
-                for plain_name in [*base_names]:
-                    match = re.match(r'(.+[\\/][0-9a-z]+ )([0-9]+) (.+)', plain_name)
-                    if match:
-                        base_names.add(match.group(1))
+                    # Add imgur album IDs as bases to match
+                    for plain_name in [*base_names]:
+                        match: Union[Match[str], None] = re.match(r'(.+[\\/][0-9a-z]+ )([0-9]+) (.+)', plain_name)
+                        if match:
+                            base_names.add(match.group(1))
 
-                filelist_no_series = filelist.copy()
+                    filelist_no_series: list[str] = filelist.copy()
 
-                for filename in filelist:
-                    # String slicing method
-                    our_base_name = os.path.splitext(filename)[0]
-                    other_base_names = base_names.difference({our_base_name})
+                    for filename in filelist:
+                        # String slicing method
+                        our_base_name: str = os.path.splitext(filename)[0]
+                        other_base_names: set[str] = {
+                            os.path.splitext(p)[0]
+                            for p in filelist
+                            if p != filename and len(os.path.split(p)[1]) > 18
+                        }
 
-                    # base_name_quick_stub = base_name_quick[:-12]
-                    # base_name_len = len(base_name_quick)
-                    # logger.info(repr((base_names, base_name_quick)))
-                    # logger.info(base_names.difference({base_name_quick}))
-                    # logger.info(base_name_quick)
-                    # logger.info(base_name_quick_stub)
-                    #
-                    if any(our_base_name.startswith(n) for n in other_base_names):
-                        logger.debug(f"{filename} has simple base file for '{our_base_name}' in {other_base_names}")
-                        filelist_no_series.remove(filename)
-                        if our_base_name in base_names:
-                            base_names.remove(our_base_name)
+                        # base_name_quick_stub = base_name_quick[:-12]
+                        # base_name_len = len(base_name_quick)
+                        # logger.info(repr((base_names, base_name_quick)))
+                        # logger.info(base_names.difference({base_name_quick}))
+                        # logger.info(base_name_quick)
+                        # logger.info(base_name_quick_stub)
+                        #
+                        if any(our_base_name.startswith(n) for n in other_base_names):
+                            logger.debug(f"{filename!r} has simple base file for '{our_base_name!r}' in {other_base_names}")
+                            filelist_no_series.remove(filename)
+                            if our_base_name in base_names:
+                                base_names.remove(our_base_name)
+                            else:
+                                logger.warning(f"{our_base_name=} not in startswith {other_base_names=}")
+                            continue
+                        elif any(our_base_name.startswith(n[:-6]) for n in other_base_names):
+                            logger.debug(f"{filename!r} has partial base match for '{our_base_name!r}' in {other_base_names}")
+                            filelist_no_series.remove(filename)
+                            if our_base_name in base_names:
+                                base_names.remove(our_base_name)
+                            else:
+                                logger.warning(f"{our_base_name=} not in sliced startswith {other_base_names=}")
+                            continue
                         else:
-                            logger.warning(f"{our_base_name} not in {other_base_names}")
-                        continue
-                    elif any(our_base_name.startswith(n[:-6]) for n in other_base_names):
-                        logger.debug(f"{filename} has partial base match for '{our_base_name}' in {other_base_names}")
-                        filelist_no_series.remove(filename)
-                        if our_base_name in base_names:
-                            base_names.remove(our_base_name)
-                        else:
-                            logger.warning(f"{our_base_name} not in {other_base_names}")
-                        continue
-                    else:
-                        logger.debug(f"{our_base_name} has no base file for in {other_base_names}")
+                            logger.debug(f"{our_base_name} has no base file for in {other_base_names}")
 
-                    # Smart method
-                    base_name = findBaseFileForPath(filename)
-                    if base_name in filelist_no_series:
-                        logger.debug(f"{filename} has base file in {base_name}")
-                        filelist_no_series.remove(filename)
+                        # Smart method
+                        base_name = findBaseFileForPath(filename)
+                        if base_name in filelist_no_series:
+                            logger.debug(f"{filename} has base file in {base_name}")
+                            filelist_no_series.remove(filename)
+                            continue
+
+                    if len(filelist_no_series) < self.threshhold:
                         continue
 
-                if len(filelist_no_series) < self.threshhold:
-                    continue
+                    # Validate *now*, with reduced list:
+                    for filepath in filelist_no_series.copy():
+                        if not self.db.validateHash(bundled_hash, filepath):
+                            filelist_no_series.remove(filepath)
+                            self.db.journal["removed"].append((bundled_hash, filepath))
 
-                # Validate *now*, with reduced list:
-                for filepath in filelist_no_series.copy():
-                    if not self.db.validateHash(bundled_hash, filepath):
-                        filelist_no_series.remove(filepath)
-                        self.db.journal["removed"].append((bundled_hash, filepath))
+                    if len(filelist_no_series) < self.threshhold:
+                        continue
 
-                if len(filelist_no_series) < self.threshhold:
-                    continue
+                    yield (filelist, bundled_hash)
 
+        for (filelist, bundled_hash) in itertools.islice(_filteredFileLists(), self.load_limit):
             self.duplicates[bundled_hash] = filelist
             # if len(self.duplicates.keys()) > 5:
             #     break
+
         self.db.applyJournal()
 
         self.duplicate_hash_list = sorted(
             list(self.duplicates.keys()),
-            key=lambda k: self.duplicates.get(k)[:1]
+            key=lambda k: self.duplicates.get(k)[:1]  # type: ignore[index]
         )
         self.hash_picker.configure(values=self.duplicate_hash_list)
         self.hash_picker.current(0)
@@ -696,6 +710,7 @@ class MainWindow(tk.Tk):
         self.current_file.set("")
         self.current_filelist = list(filter(self.trash.isfile, all_dupes_for_hash))
         try:
+            self.current_filelist = sorted(self.current_filelist)
             self.current_filelist = sorted(self.current_filelist, key=lambda x: makeSortTupleAll(x, criteria=self.criteria))
         except Exception:
             logger.error(self.current_filelist, exc_info=True)

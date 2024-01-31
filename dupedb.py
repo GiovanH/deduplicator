@@ -409,7 +409,7 @@ class db():
                     )
                 session.commit()
 
-    def generateDuplicateFilelists(self, bundleHash=False, threshhold: int = 1, validate=True) -> typing.Union[str, tuple[str, str]]:
+    def generateDuplicateFilelists(self, bundleHash=False, threshhold: int = 1, validate=True) -> typing.Union[typing.Iterator[str], typing.Iterator[tuple[list[str], str]]]:
         """Generate lists of files which all have the same hash.
 
         Args:
@@ -566,12 +566,25 @@ class db():
             logger.warning(f"File {image_path} has wrong {self.hashsize}-hash: expected {expected_hash}, got {real_hash}. Replacing...")
 
             with orm.Session(self.engine) as session:
+                # session.execute(
+                #     sqlalchemy.delete(FileEntry)
+                #     .where(FileEntry.path == image_path)
+                # )
                 session.execute(
                     sqlalchemy.update(FileEntry)
                     .where(FileEntry.path == image_path)
                     .values(proc_hash=real_hash)
                 )
                 session.commit()
+                for match in session.scalars(
+                    session.query(FileEntry)
+                    .where(FileEntry.path == image_path)
+                ):
+                    if match.proc_hash != real_hash:
+                        print(asdict(match))
+                        raise ValueError(f"Failed to update fileentry! {image_path=} {expected_hash=} {real_hash=} {match.proc_hash=}")
+                    else:
+                        print("Successfully updated.")
             return False
         else:
             return True
