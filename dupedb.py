@@ -38,8 +38,8 @@ from snip.stream import TriadLogger
 logger = TriadLogger(__name__)
 
 # DEBUG_FILE_EXISTS = False
-VALID_IMAGE_EXTENSIONS = {"gif", "jpg", "png", "jpeg", "bmp", "jfif"}
-VALID_VIDEO_EXTENSIONS = {"webm", "mp4"}
+VALID_IMAGE_EXTENSIONS = {".gif", ".jpg", ".png", ".jpeg", ".bmp", ".jfif"}
+VALID_VIDEO_EXTENSIONS = {".webm", ".mp4"}
 
 # Image.MAX_IMAGE_PIXELS = 148306125
 Image.MAX_IMAGE_PIXELS = 160000000
@@ -110,6 +110,7 @@ def getProcHash(file_path: str, hashsize: int, strict=True) -> str:
     #     return CACHE.get(file_path)
     if isImage(file_path):
         if strict and snip.image.framesInImage(file_path) > 1:
+            logger.debug(f"Too many frames for a strict proc_hash: {file_path}, {snip.image.framesInImage(file_path)}")
             return snip.hash.md5file(file_path)
 
         image = Image.open(file_path)
@@ -117,6 +118,7 @@ def getProcHash(file_path: str, hashsize: int, strict=True) -> str:
 
     elif isVideo(file_path):
         if strict:
+            logger.debug(f"Video not proc_hashable in strict mode, using md5: {file_path}")
             return snip.hash.md5file(file_path)
 
         import cv2
@@ -128,6 +130,7 @@ def getProcHash(file_path: str, hashsize: int, strict=True) -> str:
         return str(imagehash.dhash(image, hash_size=hashsize))
 
     else:
+        logger.debug(f"Not proc_hashable, using md5: {file_path}")
         return snip.hash.md5file(file_path)
 
 def imageSize(filename: str) -> int:
@@ -430,10 +433,11 @@ class db():
                     FileEntry.proc_hash,
                 )
                 .group_by(FileEntry.proc_hash)
-                .having(sqlalchemy.func.count(FileEntry.proc_hash) > 1)
+                .having(sqlalchemy.func.count(FileEntry.proc_hash) >= threshhold)
             )
 
             hashes = list(hashes)
+            # logger.info(hashes)
             for key in tqdm.tqdm(hashes):
                 # print("query", key)
                 fileset: list[FileEntry] = [*session.scalars(
@@ -441,9 +445,8 @@ class db():
                     .where(FileEntry.proc_hash == key)
                 )]
 
-                # print("lenset", fileset)
-
                 if len(fileset) < threshhold:
+                    # TODO: Debug this error case
                     continue
 
                 filenames: list[str] = [str(entry.path) for entry in fileset]
