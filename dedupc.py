@@ -595,8 +595,8 @@ def parse_args():
         "--noprogress", action="store_true",
         help="Disallow progress bars.")
     ap.add_argument(
-        "--strict", action="store_true",
-        help="Base hash on the entire body of images and animations")
+        "--no-strict", action="store_true",
+        help="For animated media, use the first frame as an image instead of considering the whole file.")
     ap.add_argument(
         "--purge", action="store_true",
         help="Delete records of files not currently seen, even if they're in the database.")
@@ -619,7 +619,7 @@ def main():
 
     shelvefile = "{0}.s{1}".format(args.shelve, args.hashsize)
 
-    db = dupedb.db(shelvefile, hashsize=args.hashsize, strict_mode=args.strict)
+    db = dupedb.db(shelvefile, hashsize=args.hashsize, strict_mode=(not args.no_strict))
 
     # if args.listsimilar:
     #     check_similar(db)
