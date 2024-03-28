@@ -595,6 +595,9 @@ def parse_args():
         "--noprogress", action="store_true",
         help="Disallow progress bars.")
     ap.add_argument(
+        "--json", action="store_true",
+        help="Output in json format")
+    ap.add_argument(
         "--no-strict", action="store_true",
         help="For animated media, use the first frame as an image instead of considering the whole file.")
     ap.add_argument(
@@ -667,6 +670,14 @@ def main():
         files_to_delete = getDuplicatesToDelete(db, criteria=criteria, interactive=args.interactive)
         if not args.mock:
             deleteFiles(files_to_delete)
+
+    if args.json:
+        print(json.dumps({
+            bundled_hash: filepaths
+            for (filepaths, bundled_hash) in
+            db.generateDuplicateFilelists(bundleHash=True, threshhold=1)
+        }, indent=2))
+
 
     if args.list:
         listDuplicates(db)
