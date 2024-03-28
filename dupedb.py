@@ -109,9 +109,14 @@ def getProcHash(file_path: str, hashsize: int, strict=True) -> str:
     # if CACHE.get(file_path):
     #     return CACHE.get(file_path)
     if isImage(file_path):
-        if strict and snip.image.framesInImage(file_path) > 1:
-            logger.debug(f"Too many frames for a strict proc_hash: {file_path}, {snip.image.framesInImage(file_path)}")
+        try:
+            if strict and snip.image.framesInImage(file_path) > 1:
+                logger.debug(f"Too many frames for a strict proc_hash: {file_path}, {snip.image.framesInImage(file_path)}")
+                return snip.hash.md5file(file_path)
+        except TypeError:
+            logger.error(f"Couldn't calculate frames count: {file_path}", exc_info=True)
             return snip.hash.md5file(file_path)
+
 
         image = Image.open(file_path)
         return str(imagehash.dhash(image, hash_size=hashsize))
