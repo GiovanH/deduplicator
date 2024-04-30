@@ -631,6 +631,7 @@ def main():
     if args.prune:
         db.prune()
 
+
     # Scan directories for files and populate database
     if args.scanfiles:
         logger.info("Scanning for files")

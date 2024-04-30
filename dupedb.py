@@ -34,8 +34,11 @@ Base = orm.declarative_base()
 
 sqlecho = False
 
-from snip.stream import TriadLogger
-logger = TriadLogger(__name__)
+# from snip.stream import TriadLogger
+# logger = TriadLogger(__name__)
+
+import logging
+logger = logging.getLogger(__name__)
 
 # DEBUG_FILE_EXISTS = False
 VALID_IMAGE_EXTENSIONS = {".gif", ".jpg", ".png", ".jpeg", ".bmp", ".jfif"}
@@ -113,7 +116,7 @@ def getProcHash(file_path: str, hashsize: int, strict=True) -> str:
             if strict and snip.image.framesInImage(file_path) > 1:
                 logger.debug(f"Too many frames for a strict proc_hash: {file_path}, {snip.image.framesInImage(file_path)}")
                 return snip.hash.md5file(file_path)
-        except TypeError:
+        except:
             logger.error(f"Couldn't calculate frames count: {file_path}", exc_info=True)
             return snip.hash.md5file(file_path)
 
