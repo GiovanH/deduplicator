@@ -5,39 +5,29 @@ Attributes:
     VALID_IMAGE_EXTENSIONS (list): List of extensions to consider "images"
 
 """
-import imagehash        # Perceptual image hashing
-import tqdm             # Progress bars
-import os.path          # isfile() method
-import traceback
-from PIL import Image   # Image IO libraries
-# from json.decoder import JSONDecodeError
-from cv2 import error as cv2_error
-
-# import shelve           # Persistant data storage
-# import snip.jfileutil as ju
-import snip.image
-import snip.data
-# from snip.loom import Spool
 import itertools
-# from functools import lru_cache
+import logging
+import os.path  # isfile() method
 import re
-from math import ceil
-# import json
+import traceback
 import typing
+from math import ceil
+
+import imagehash  # Perceptual image hashing
+import snip.data
+import snip.image
+import sqlalchemy
+import tqdm  # Progress bars
+from cv2 import error as cv2_error
+from PIL import Image  # Image IO libraries
+from sqlalchemy import orm
 
 import parallel_threads
-
-import sqlalchemy
-import sqlalchemy.orm as orm
 
 Base = orm.declarative_base()
 
 sqlecho = False
 
-# from snip.stream import TriadLogger
-# logger = TriadLogger(__name__)
-
-import logging
 logger = logging.getLogger(__name__)
 
 # DEBUG_FILE_EXISTS = False
@@ -46,6 +36,7 @@ VALID_VIDEO_EXTENSIONS = {".webm", ".mp4"}
 
 # Image.MAX_IMAGE_PIXELS = 148306125
 Image.MAX_IMAGE_PIXELS = 160000000
+
 
 def isImage(filename: str) -> bool:
     """
@@ -158,10 +149,10 @@ def imageSize(filename: str) -> int:
         size = w * h
         return size
     except Image.DecompressionBombError:
-        return Image.MAX_IMAGE_PIXELS
+        return Image.MAX_IMAGE_PIXELS  # type: ignore
     except FileNotFoundError:
         logger.error("File not found: " + filename)
-        raise FileNotFoundError(filename)
+        raise
     except OSError:
         # print("WARNING! OS error with file: " + filename)
         # traceback.print_exc()
@@ -191,27 +182,38 @@ class db():
 
     """
 
-    def __init__(self, shelvefile, hashsize=None, progressbar_allowed=True, strict_mode=True):
+    def __init__(self,
+        shelvefile: str,
+        hashsize: typing.Optional[int] = None,
+        *,
+        progressbar_allowed: bool = True,
+        strict_mode: bool = True
+    ) -> None:
         super(db, self).__init__()
         self.shelvefile = shelvefile
 
-        self.engine = sqlalchemy.create_engine(f"sqlite+pysqlite:///{shelvefile}.sqlite", echo=sqlecho, pool_size=10, max_overflow=20)
+        self.engine: sqlalchemy.Engine = sqlalchemy.create_engine(
+            f"sqlite+pysqlite:///{shelvefile}.sqlite",
+            echo=sqlecho, pool_size=10, max_overflow=20
+        )
         Base.metadata.create_all(self.engine)
 
         self.progressbar_allowed = progressbar_allowed
         self.strict_mode = strict_mode
 
-        if hashsize == None:
+        if hashsize is None:
             # Hack: find size from naming convention
             try:
-                (hashsize,) = re.search(r"\.s(\d+)$", shelvefile).groups()
-                hashsize = int(hashsize)
+                (size_match,) = re.search(r"\.s(\d+)$", shelvefile).groups()  # type: ignore
+                hashsize = int(size_match)
             except:
                 print(repr(shelvefile))
                 logger.error(shelvefile, exc_info=True)
 
-        self.hashsize = hashsize
-        self.journal = {
+        assert isinstance(hashsize, int)
+
+        self.hashsize: int = hashsize
+        self.journal: dict[str, list[str]] = {
             "removed": [],
             "validate": []
         }
@@ -230,15 +232,6 @@ class db():
 
         for hash, path in self.journal['validate']:
             self.validateHash(hash, path)
-
-    # def updateRaw(self, old, new, hash):
-    #     """Unused?
-
-    #     Args:
-    #         old (list): The old filepaths
-    #         new (list): The new filepaths
-    #         hash (TYPE): The hash
-    #     """
 
     def purge(self, keeppaths=[]) -> None:
         """Remove hashes without files and files that are not in keeppaths
@@ -336,7 +329,7 @@ class db():
                 return
             except (ValueError, cv2_error, SyntaxError):
                 logger.error("Error parsing image '%s'", image_path, exc_info=True)
-                with open(f"badfiles_{self.shelvefile}.txt", "a", newline='\n') as shellfile:
+                with open(f"badfiles_{self.shelvefile}.txt", "a", encoding='utf-8', newline='\n') as shellfile:
                     shellfile.write("{} \n".format(image_path))
                 return
             except OSError:
@@ -346,7 +339,7 @@ class db():
 
                 logger.warning("File '%s' is corrupt or invalid." % image_path)
                 logger.debug("File '%s' is corrupt or invalid.", image_path)
-                with open(f"badfiles_{self.shelvefile}.txt", "a", newline='\n') as shellfile:
+                with open(f"badfiles_{self.shelvefile}.txt", "a", encoding='utf-8', newline='\n') as shellfile:
                     shellfile.write("{} \n".format(image_path))
 
                 return
@@ -397,17 +390,17 @@ class db():
         )
 
         for (i, image_path_chunk) in tqdm.tqdm(fingerprinters, total=total_chunks):
-            results = parallel_threads.do_work_helper(
+            results: list[tuple[str, str]] = parallel_threads.do_work_helper(
                 fingerprintImage,
                 [(image_path,) for image_path in image_path_chunk]
             )
             with orm.Session(self.engine) as session:
                 for (image_path, proc_hash) in filter(bool, results):
-                    value_dict = dict(
-                        proc_hash=proc_hash,
-                        size_b=os.path.getsize(image_path),
-                        size_px=imageSize(image_path)
-                    )
+                    value_dict = {
+                        "proc_hash": proc_hash,
+                        "size_b": os.path.getsize(image_path),
+                        "size_px": imageSize(image_path)
+                    }
                     session.execute(
                         sqlalchemy.dialects.sqlite.insert(FileEntry)  # type: ignore[attr-defined]
                         .values(
@@ -420,7 +413,12 @@ class db():
                     )
                 session.commit()
 
-    def generateDuplicateFilelists(self, bundleHash=False, threshhold: int = 1, validate=True) -> typing.Union[typing.Iterator[str], typing.Iterator[tuple[list[str], str]]]:
+    def generateDuplicateFilelists(
+        self,
+        bundleHash=False,
+        threshhold: int = 1,
+        validate=True
+    ) -> typing.Iterator[typing.Union[list[str], tuple[list[str], str]]]:
         """Generate lists of files which all have the same hash.
 
         Args:
@@ -434,7 +432,7 @@ class db():
         """
         logger.info("Generating information about duplicate images from database")
 
-        with orm.Session(self.engine) as session:
+        with orm.Session(self.engine) as session:  # noqa: PLR1702
             # FileEntry2 = orm.aliased(FileEntry)
             hashes: list[str] = session.scalars(  # type: ignore[assignment]
                 session.query(
@@ -508,54 +506,31 @@ class db():
         # if pbar:
         #     pbar.close()
 
-    def prune(self):
-        # Removes files that have disappeared
+    # def prune(self):
+    #     # Removes files that have disappeared
 
-        def _prune(key):
+    #     def _prune(key):
 
-            filenames = set()
-            for filepath in db[key]:
-                if fast_isfile(filepath):
-                    filenames.add(filepath)
-                else:
-                    logger.warning("File '%s' disappeared, removing", filepath)
+    #         filenames = set()
+    #         for filepath in self.db[key]:
+    #             if fast_isfile(filepath):
+    #                 filenames.add(filepath)
+    #             else:
+    #                 logger.warning("File '%s' disappeared, removing", filepath)
 
-            for path in [*filenames]:
-                if pathHasGenericName(path):
-                    logger.warning(f"File {path} is a generic name! Removing")
-                    filenames.remove(path)
+    #         for path in [*filenames]:
+    #             if pathHasGenericName(path):
+    #                 logger.warning(f"File {path} is a generic name! Removing")
+    #                 filenames.remove(path)
 
-            for f1, f2 in itertools.combinations(filenames, 2):
-                if os.path.samefile(f1, f2):
-                    logger.warning(f"File {f1} is a samefile duplicate of {f2}")
-                    filenames.remove(f2)
+    #         for f1, f2 in itertools.combinations(filenames, 2):
+    #             if os.path.samefile(f1, f2):
+    #                 logger.warning(f"File {f1} is a samefile duplicate of {f2}")
+    #                 filenames.remove(f2)
 
-            raise NotImplementedError(prune)
-            # Cleanup
-            # db[key] = list(filenames)
+    #         raise NotImplementedError(self.prune)
 
-            # # Remove hashes with no files
-            # if len(db[key]) == 0:
-            #     db.pop(key)
-
-        raise NotImplementedError(prune)
-        # with ju.RotatingHandler(self.shelvefile, basepath="databases", readonly=True) as db:
-        # dbkeys = list(sqlalchemy.keys())
-        # chunk_size = 100*60*5
-
-        # total_chunks = ceil(len(dbkeys) / chunk_size)
-
-        # pruners = tqdm.tqdm(
-        #     iterable=enumerate(snip.data.chunk(dbkeys, chunk_size)),
-        #     desc="Prune",
-        #     unit="chunk"
-        # )
-
-        # for (i, keychunk) in pruners:
-        #     with ju.RotatingHandler(self.shelvefile, basepath="databases", readonly=False) as db:
-        #         with snip.loom.Spool(20, name="Prune {}/{}".format(i + 1, total_chunks)) as spool:
-        #             for key in keychunk:
-        #                 spool.enqueue(_prune, (db, key,))
+    #     raise NotImplementedError(self.prune)
 
     def validateHash(self, expected_hash: str, image_path: str) -> bool:
         if not fast_isfile(image_path):
@@ -601,4 +576,4 @@ class db():
             return True
 
     def fullValidate(self, threshhold=1) -> None:
-        self.generateDuplicateFilelists(self, threshhold=threshhold, validate=True)
+        self.generateDuplicateFilelists(threshhold=threshhold, validate=True)
